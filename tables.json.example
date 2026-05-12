@@ -1,0 +1,238 @@
+{
+  "meta": {
+    "version": "example-1.0",
+    "scope": "Bookstore sample — demonstrates every relation type and node style supported by the viewer"
+  },
+  "domains": [
+    { "id": "commercial",    "color": "#4E79A7" },
+    { "id": "sales",         "color": "#F28E2B" },
+    { "id": "customer",      "color": "#E15759" },
+    { "id": "cross-cutting", "color": "#76B7B2" },
+    { "id": "reference",     "color": "#9C755F" }
+  ],
+  "tables": [
+    {
+      "id": "publisher",
+      "name": "Publisher",
+      "name_ja": "出版社",
+      "domain": "commercial",
+      "type": "entity",
+      "modeled": true,
+      "relations": [
+        { "type": "has_many", "target": "book" },
+        { "type": "many_to_many", "target": "author", "label": "contracted" }
+      ]
+    },
+    {
+      "id": "author",
+      "name": "Author",
+      "name_ja": "著者",
+      "domain": "commercial",
+      "type": "entity",
+      "modeled": true,
+      "relations": [
+        { "type": "many_to_many", "target": "book", "label": "wrote" },
+        { "type": "many_to_many", "target": "publisher" }
+      ]
+    },
+    {
+      "id": "book",
+      "name": "Book",
+      "name_ja": "書籍",
+      "domain": "commercial",
+      "type": "entity",
+      "modeled": true,
+      "relations": [
+        { "type": "belongs_to", "target": "publisher" },
+        { "type": "many_to_many", "target": "author" },
+        { "type": "many_to_many", "target": "genre" },
+        { "type": "belongs_to", "target": "language" },
+        { "type": "extends", "target": "ebook" },
+        { "type": "extends", "target": "physical_book" },
+        { "type": "has_many", "target": "order_line" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "isbn", "type": "string(13)", "nullable": false, "unique": true },
+        { "name": "title", "type": "string(255)", "nullable": false },
+        { "name": "subtitle", "type": "string(255)" },
+        { "name": "publisher_id", "type": "uuid", "fk": "publisher", "nullable": false },
+        { "name": "language_id", "type": "uuid", "fk": "language", "nullable": false },
+        { "name": "published_at", "type": "date", "notes": "Publication date as printed on the book." },
+        { "name": "price_cents", "type": "integer", "nullable": false },
+        { "name": "created_at", "type": "timestamp", "nullable": false },
+        { "name": "updated_at", "type": "timestamp", "nullable": false }
+      ]
+    },
+    {
+      "id": "ebook",
+      "name": "E-Book",
+      "name_ja": "電子書籍",
+      "domain": "commercial",
+      "type": "extension",
+      "modeled": true,
+      "relations": [
+        { "type": "belongs_to", "target": "book" }
+      ]
+    },
+    {
+      "id": "physical_book",
+      "name": "Physical Book",
+      "name_ja": "紙の本",
+      "domain": "commercial",
+      "type": "extension",
+      "modeled": true,
+      "notes": "Has weight, dimensions, stock count — not yet modeled in inventory.",
+      "relations": [
+        { "type": "belongs_to", "target": "book" }
+      ]
+    },
+    {
+      "id": "customer",
+      "name": "Customer",
+      "name_ja": "顧客",
+      "domain": "customer",
+      "type": "entity",
+      "modeled": true,
+      "relations": [
+        { "type": "has_many", "target": "address" },
+        { "type": "has_many", "target": "order" },
+        { "type": "has_one", "target": "cart", "label": "active cart" },
+        { "type": "has_many", "target": "review" }
+      ]
+    },
+    {
+      "id": "address",
+      "name": "Address",
+      "name_ja": "住所",
+      "domain": "customer",
+      "type": "extension",
+      "modeled": true,
+      "relations": [
+        { "type": "belongs_to", "target": "customer" }
+      ]
+    },
+    {
+      "id": "cart",
+      "name": "Cart",
+      "name_ja": "カート",
+      "domain": "customer",
+      "type": "entity",
+      "modeled": false,
+      "notes": "Phase 2.",
+      "relations": [
+        { "type": "belongs_to", "target": "customer" },
+        { "type": "has_many", "target": "order_line" }
+      ]
+    },
+    {
+      "id": "order",
+      "name": "Order",
+      "name_ja": "注文",
+      "domain": "sales",
+      "type": "entity",
+      "modeled": true,
+      "relations": [
+        { "type": "belongs_to", "target": "customer" },
+        { "type": "belongs_to", "target": "address", "label": "shipping" },
+        { "type": "has_many", "target": "order_line" },
+        { "type": "has_one", "target": "payment" }
+      ]
+    },
+    {
+      "id": "order_line",
+      "name": "Order Line",
+      "name_ja": "注文明細",
+      "domain": "sales",
+      "type": "entity",
+      "modeled": true,
+      "relations": [
+        { "type": "belongs_to", "target": "order" },
+        { "type": "belongs_to", "target": "book" }
+      ]
+    },
+    {
+      "id": "payment",
+      "name": "Payment",
+      "name_ja": "支払",
+      "domain": "sales",
+      "type": "entity",
+      "modeled": true,
+      "relations": [
+        { "type": "belongs_to", "target": "order" }
+      ]
+    },
+    {
+      "id": "review",
+      "name": "Review",
+      "name_ja": "レビュー",
+      "domain": "sales",
+      "type": "entity",
+      "modeled": true,
+      "notes": "Polymorphic — a review targets either a book or an author.",
+      "relations": [
+        { "type": "belongs_to", "target": "customer" },
+        { "type": "polymorphic", "targets": ["book", "author"] }
+      ]
+    },
+    {
+      "id": "tag",
+      "name": "Tag",
+      "name_ja": "タグ",
+      "domain": "cross-cutting",
+      "type": "cross-cutting",
+      "modeled": true,
+      "relations": [
+        { "type": "has_many", "target": "tagging" }
+      ]
+    },
+    {
+      "id": "tagging",
+      "name": "Tagging",
+      "name_ja": "タグ付け",
+      "domain": "cross-cutting",
+      "type": "cross-cutting",
+      "modeled": true,
+      "notes": "Polymorphic join — any taggable record.",
+      "relations": [
+        { "type": "belongs_to", "target": "tag" },
+        { "type": "polymorphic", "targets": ["book", "author", "order"] }
+      ]
+    },
+    {
+      "id": "audit_log",
+      "name": "Audit Log",
+      "name_ja": "監査ログ",
+      "domain": "cross-cutting",
+      "type": "cross-cutting",
+      "modeled": false,
+      "notes": "Read-only. Captures every mutation across the system.",
+      "relations": [
+        { "type": "polymorphic", "targets": ["*"] }
+      ]
+    },
+    {
+      "id": "genre",
+      "name": "Genre",
+      "name_ja": "ジャンル",
+      "domain": "reference",
+      "type": "reference",
+      "modeled": true,
+      "relations": [
+        { "type": "many_to_many", "target": "book" }
+      ]
+    },
+    {
+      "id": "language",
+      "name": "Language",
+      "name_ja": "言語",
+      "domain": "reference",
+      "type": "reference",
+      "modeled": true,
+      "relations": [
+        { "type": "has_many", "target": "book" }
+      ]
+    }
+  ]
+}
+
