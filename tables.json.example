@@ -1,7 +1,7 @@
 {
   "meta": {
-    "version": "example-1.0",
-    "scope": "Bookstore sample — demonstrates every relation type and node style supported by the viewer"
+    "version": "example-1.1",
+    "scope": "Bookstore sample — demonstrates every relation type, node style, and column metadata supported by the viewer"
   },
   "domains": [
     { "id": "commercial",    "color": "#4E79A7" },
@@ -21,6 +21,13 @@
       "relations": [
         { "type": "has_many", "target": "book" },
         { "type": "many_to_many", "target": "author", "label": "contracted" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "name", "type": "string(255)", "nullable": false, "unique": true },
+        { "name": "country_code", "type": "string(2)", "notes": "ISO 3166-1 alpha-2" },
+        { "name": "website", "type": "string(255)" },
+        { "name": "created_at", "type": "timestamp", "nullable": false }
       ]
     },
     {
@@ -33,6 +40,15 @@
       "relations": [
         { "type": "many_to_many", "target": "book", "label": "wrote" },
         { "type": "many_to_many", "target": "publisher" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "first_name", "type": "string(100)", "nullable": false },
+        { "name": "last_name", "type": "string(100)", "nullable": false },
+        { "name": "pen_name", "type": "string(100)", "notes": "Optional pseudonym used on covers." },
+        { "name": "born_on", "type": "date" },
+        { "name": "died_on", "type": "date" },
+        { "name": "bio", "type": "text" }
       ]
     },
     {
@@ -73,6 +89,13 @@
       "modeled": true,
       "relations": [
         { "type": "belongs_to", "target": "book" }
+      ],
+      "columns": [
+        { "name": "book_id", "type": "uuid", "pk": true, "fk": "book" },
+        { "name": "format", "type": "enum(epub,pdf,mobi)", "nullable": false },
+        { "name": "file_url", "type": "string(500)", "nullable": false },
+        { "name": "file_size_bytes", "type": "bigint", "nullable": false },
+        { "name": "drm_protected", "type": "boolean", "nullable": false }
       ]
     },
     {
@@ -85,6 +108,15 @@
       "notes": "Has weight, dimensions, stock count — not yet modeled in inventory.",
       "relations": [
         { "type": "belongs_to", "target": "book" }
+      ],
+      "columns": [
+        { "name": "book_id", "type": "uuid", "pk": true, "fk": "book" },
+        { "name": "weight_g", "type": "integer" },
+        { "name": "width_mm", "type": "integer" },
+        { "name": "height_mm", "type": "integer" },
+        { "name": "depth_mm", "type": "integer" },
+        { "name": "page_count", "type": "integer" },
+        { "name": "stock_qty", "type": "integer", "nullable": false, "notes": "Defaults to 0; decremented on order fulfillment." }
       ]
     },
     {
@@ -99,6 +131,16 @@
         { "type": "has_many", "target": "order" },
         { "type": "has_one", "target": "cart", "label": "active cart" },
         { "type": "has_many", "target": "review" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "email", "type": "string(255)", "nullable": false, "unique": true },
+        { "name": "password_hash", "type": "string(60)", "nullable": false, "notes": "bcrypt" },
+        { "name": "first_name", "type": "string(100)" },
+        { "name": "last_name", "type": "string(100)" },
+        { "name": "phone", "type": "string(20)" },
+        { "name": "email_verified_at", "type": "timestamp" },
+        { "name": "created_at", "type": "timestamp", "nullable": false }
       ]
     },
     {
@@ -110,6 +152,16 @@
       "modeled": true,
       "relations": [
         { "type": "belongs_to", "target": "customer" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "customer_id", "type": "uuid", "fk": "customer", "nullable": false },
+        { "name": "label", "type": "string(50)", "notes": "e.g. \"Home\", \"Office\"" },
+        { "name": "street", "type": "string(255)", "nullable": false },
+        { "name": "city", "type": "string(100)", "nullable": false },
+        { "name": "postal_code", "type": "string(20)", "nullable": false },
+        { "name": "country_code", "type": "string(2)", "nullable": false },
+        { "name": "is_default", "type": "boolean", "nullable": false }
       ]
     },
     {
@@ -123,6 +175,11 @@
       "relations": [
         { "type": "belongs_to", "target": "customer" },
         { "type": "has_many", "target": "order_line" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "customer_id", "type": "uuid", "fk": "customer", "nullable": false, "unique": true },
+        { "name": "updated_at", "type": "timestamp", "nullable": false }
       ]
     },
     {
@@ -137,6 +194,18 @@
         { "type": "belongs_to", "target": "address", "label": "shipping" },
         { "type": "has_many", "target": "order_line" },
         { "type": "has_one", "target": "payment" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "number", "type": "string(20)", "nullable": false, "unique": true, "notes": "Human-readable, e.g. \"ORD-2026-00042\"" },
+        { "name": "customer_id", "type": "uuid", "fk": "customer", "nullable": false },
+        { "name": "shipping_address_id", "type": "uuid", "fk": "address", "nullable": false },
+        { "name": "status", "type": "enum(pending,paid,shipped,delivered,cancelled)", "nullable": false },
+        { "name": "subtotal_cents", "type": "integer", "nullable": false },
+        { "name": "tax_cents", "type": "integer", "nullable": false },
+        { "name": "shipping_cents", "type": "integer", "nullable": false },
+        { "name": "total_cents", "type": "integer", "nullable": false },
+        { "name": "placed_at", "type": "timestamp", "nullable": false }
       ]
     },
     {
@@ -149,6 +218,13 @@
       "relations": [
         { "type": "belongs_to", "target": "order" },
         { "type": "belongs_to", "target": "book" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "order_id", "type": "uuid", "fk": "order", "nullable": false },
+        { "name": "book_id", "type": "uuid", "fk": "book", "nullable": false },
+        { "name": "quantity", "type": "integer", "nullable": false },
+        { "name": "unit_price_cents", "type": "integer", "nullable": false, "notes": "Snapshot of book price at order time." }
       ]
     },
     {
@@ -160,6 +236,15 @@
       "modeled": true,
       "relations": [
         { "type": "belongs_to", "target": "order" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "order_id", "type": "uuid", "fk": "order", "nullable": false, "unique": true },
+        { "name": "provider", "type": "enum(stripe,paypal,bank_transfer)", "nullable": false },
+        { "name": "provider_ref", "type": "string(100)", "nullable": false },
+        { "name": "amount_cents", "type": "integer", "nullable": false },
+        { "name": "captured_at", "type": "timestamp" },
+        { "name": "refunded_at", "type": "timestamp" }
       ]
     },
     {
@@ -173,6 +258,16 @@
       "relations": [
         { "type": "belongs_to", "target": "customer" },
         { "type": "polymorphic", "targets": ["book", "author"] }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "customer_id", "type": "uuid", "fk": "customer", "nullable": false },
+        { "name": "reviewable_type", "type": "enum(book,author)", "nullable": false, "notes": "Polymorphic discriminator" },
+        { "name": "reviewable_id", "type": "uuid", "nullable": false },
+        { "name": "rating", "type": "integer", "nullable": false, "notes": "1–5" },
+        { "name": "title", "type": "string(255)" },
+        { "name": "body", "type": "text" },
+        { "name": "created_at", "type": "timestamp", "nullable": false }
       ]
     },
     {
@@ -184,6 +279,11 @@
       "modeled": true,
       "relations": [
         { "type": "has_many", "target": "tagging" }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "slug", "type": "string(50)", "nullable": false, "unique": true },
+        { "name": "label", "type": "string(100)", "nullable": false }
       ]
     },
     {
@@ -197,6 +297,13 @@
       "relations": [
         { "type": "belongs_to", "target": "tag" },
         { "type": "polymorphic", "targets": ["book", "author", "order"] }
+      ],
+      "columns": [
+        { "name": "id", "type": "uuid", "pk": true },
+        { "name": "tag_id", "type": "uuid", "fk": "tag", "nullable": false },
+        { "name": "taggable_type", "type": "enum(book,author,order)", "nullable": false },
+        { "name": "taggable_id", "type": "uuid", "nullable": false },
+        { "name": "created_at", "type": "timestamp", "nullable": false }
       ]
     },
     {
@@ -209,6 +316,15 @@
       "notes": "Read-only. Captures every mutation across the system.",
       "relations": [
         { "type": "polymorphic", "targets": ["*"] }
+      ],
+      "columns": [
+        { "name": "id", "type": "bigserial", "pk": true },
+        { "name": "actor_id", "type": "uuid", "notes": "Customer or staff member who triggered the change. Null for system events." },
+        { "name": "target_type", "type": "string(50)", "nullable": false },
+        { "name": "target_id", "type": "uuid", "nullable": false },
+        { "name": "action", "type": "enum(create,update,delete)", "nullable": false },
+        { "name": "changes", "type": "jsonb", "notes": "Diff of changed fields." },
+        { "name": "occurred_at", "type": "timestamp", "nullable": false }
       ]
     },
     {
@@ -220,6 +336,12 @@
       "modeled": true,
       "relations": [
         { "type": "many_to_many", "target": "book" }
+      ],
+      "columns": [
+        { "name": "id", "type": "smallint", "pk": true },
+        { "name": "slug", "type": "string(50)", "nullable": false, "unique": true },
+        { "name": "label_en", "type": "string(100)", "nullable": false },
+        { "name": "label_ja", "type": "string(100)" }
       ]
     },
     {
@@ -231,8 +353,12 @@
       "modeled": true,
       "relations": [
         { "type": "has_many", "target": "book" }
+      ],
+      "columns": [
+        { "name": "code", "type": "string(2)", "pk": true, "notes": "ISO 639-1" },
+        { "name": "label_en", "type": "string(100)", "nullable": false },
+        { "name": "label_native", "type": "string(100)", "nullable": false }
       ]
     }
   ]
 }
-
