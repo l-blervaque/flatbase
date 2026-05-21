@@ -1180,6 +1180,94 @@ function deriveDomains(tables) {
   return seen.map((id, i) => ({ id, color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] }));
 }
 
+// Normalize a raw schema (single-file or bundled from folder) into the shape
+// the renderer expects. See docs/FORMAT.md for the canonical format.
+function normalizeData(data) {
+  if (!data || !Array.isArray(data.tables)) {
+    throw new Error('missing "tables" array');
+  }
+
+  if (!Array.isArray(data.domains) || data.domains.length === 0) {
+    data.domains = deriveDomains(data.tables);
+  } else {
+    // Fill in missing colors from the palette in declaration order
+    data.domains = data.domains.map((d, i) => ({
+      ...d,
+      color: d.color || DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+    }));
+  }
+
+  for (const t of data.tables) {
+    // status (preferred) ↔ modeled (legacy alias)
+    if (t.status !== undefined) {
+      t.modeled = t.status === 'complete';
+    } else if (t.modeled === undefined) {
+      t.modeled = true;
+    }
+
+    // Normalize fk: object → string id (preserve original on `fk_ref`)
+    for (const col of (t.columns || [])) {
+      if (col && typeof col === 'object' && col.fk && typeof col.fk === 'object') {
+        col.fk_ref = col.fk;
+        col.fk = col.fk.table;
+      }
+    }
+  }
+
+  deriveRelations(data.tables);
+  return data;
+}
+
+function deriveRelations(tables) {
+  const tableById = Object.fromEntries(tables.map(t => [t.id, t]));
+
+  // Pass 1 — for tables without explicit relations, derive belongs_to and polymorphic from columns.
+  for (const t of tables) {
+    if (Array.isArray(t.relations) && t.relations.length > 0) continue;
+    const rels = [];
+    for (const col of (t.columns || [])) {
+      if (!col || typeof col !== 'object') continue;
+      if (col.polymorphic && Array.isArray(col.polymorphic.targets)) {
+        rels.push({ type: 'polymorphic', targets: col.polymorphic.targets, label: col.name });
+      } else if (col.fk) {
+        rels.push({ type: 'belongs_to', target: col.fk, label: col.name });
+      }
+    }
+    t.relations = rels;
+  }
+
+  // Pass 2 — inject has_many on each parent for any belongs_to that doesn't have a matching forward relation.
+  for (const child of tables) {
+    for (const rel of (child.relations || [])) {
+      if (rel.type !== 'belongs_to') continue;
+      const parent = tableById[rel.target];
+      if (!parent) continue;
+      parent.relations = parent.relations || [];
+      const exists = parent.relations.some(r =>
+        (r.target === child.id || (r.targets || []).includes(child.id)) &&
+        (r.type === 'has_many' || r.type === 'has_one' || r.type === 'extends' || r.type === 'many_to_many')
+      );
+      if (!exists) parent.relations.push({ type: 'has_many', target: child.id });
+    }
+  }
+
+  // Pass 3 — extension tables: replace the parent's auto-injected has_many with extends.
+  for (const child of tables) {
+    if (child.type !== 'extension') continue;
+    const pkFk = (child.columns || []).find(c => c && typeof c === 'object' && c.pk && c.fk);
+    if (!pkFk) continue;
+    const parent = tableById[pkFk.fk];
+    if (!parent) continue;
+    parent.relations = (parent.relations || []).filter(r =>
+      !(r.type === 'has_many' && r.target === child.id)
+    );
+    const already = parent.relations.some(r =>
+      r.type === 'extends' && (r.target === child.id || (r.targets || []).includes(child.id))
+    );
+    if (!already) parent.relations.push({ type: 'extends', target: child.id });
+  }
+}
+
 function loadCachedData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -1187,8 +1275,121 @@ function loadCachedData() {
   } catch { return null; }
 }
 
-function pickFile() {
+// --- Folder / multi-file ingestion -----------------------------------------
+
+function readFileAsText(file) {
   return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('Could not read ' + file.name));
+    r.readAsText(file);
+  });
+}
+
+function fileFromEntry(entry) {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+function listDirEntry(dirEntry) {
+  return new Promise((resolve, reject) => {
+    const reader = dirEntry.createReader();
+    const all = [];
+    const readBatch = () => reader.readEntries(entries => {
+      if (entries.length === 0) resolve(all);
+      else { all.push(...entries); readBatch(); }
+    }, reject);
+    readBatch();
+  });
+}
+
+async function collectJsonFromDir(dirEntry) {
+  const files = {};
+  const entries = await listDirEntry(dirEntry);
+  for (const e of entries) {
+    if (!e.isFile || !e.name.endsWith('.json')) continue;
+    const f = await fileFromEntry(e);
+    files[e.name] = await readFileAsText(f);
+  }
+  return files;
+}
+
+async function collectJsonFromFileList(fileList) {
+  const files = {};
+  for (const f of fileList) {
+    if (!f.name.endsWith('.json')) continue;
+    files[f.name] = await readFileAsText(f);
+  }
+  return files;
+}
+
+// Turn a {filename → text} map of a multi-file folder into the canonical shape.
+function bundleMultiFile(filesByName) {
+  if (!filesByName['index.json']) {
+    throw new Error('Multi-file drop requires an index.json.');
+  }
+  const index = JSON.parse(filesByName['index.json']);
+  if (!Array.isArray(index.domains)) {
+    throw new Error('index.json: missing "domains" array.');
+  }
+
+  const domains = index.domains.map((d, i) => ({
+    id: d.id,
+    color: d.color || DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+  }));
+
+  const tables = [];
+  for (const d of index.domains) {
+    const fname = d.file || `${d.id}.json`;
+    const raw = filesByName[fname];
+    if (!raw) throw new Error(`Missing ${fname} (referenced by domain "${d.id}").`);
+    const parsed = JSON.parse(raw);
+    for (const t of (parsed.tables || [])) {
+      tables.push({ ...t, domain: t.domain || parsed.domain || d.id });
+    }
+  }
+
+  const enumsFile = index.enums_file || 'enums.json';
+  let enums = [];
+  if (filesByName[enumsFile]) {
+    try {
+      const parsed = JSON.parse(filesByName[enumsFile]);
+      enums = Array.isArray(parsed.enums) ? parsed.enums : [];
+    } catch (e) {
+      throw new Error(`${enumsFile}: ${e.message}`);
+    }
+  }
+
+  return { meta: index.meta || {}, domains, enums, tables };
+}
+
+// Inspect a DataTransfer and produce a raw (pre-normalization) data object.
+async function readDrop(dt) {
+  // 1. Directory entry?
+  if (dt.items) {
+    for (const it of dt.items) {
+      const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (entry && entry.isDirectory) {
+        const files = await collectJsonFromDir(entry);
+        return bundleMultiFile(files);
+      }
+    }
+  }
+  // 2. Multiple files with index.json → treat as multi-file bundle.
+  const fileList = [...(dt.files || [])];
+  if (fileList.length > 1 && fileList.some(f => f.name === 'index.json')) {
+    const files = await collectJsonFromFileList(fileList);
+    return bundleMultiFile(files);
+  }
+  // 3. Single file.
+  if (fileList[0]) {
+    const text = await readFileAsText(fileList[0]);
+    return JSON.parse(text);
+  }
+  throw new Error('Drop a tables.json file or a schema/ folder.');
+}
+
+function pickFile() {
+  return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.id = 'data-picker';
     Object.assign(overlay.style, {
@@ -1198,12 +1399,12 @@ function pickFile() {
     });
     overlay.innerHTML = `
       <div id="drop-zone" style="max-width:560px;width:100%;border:2px dashed #45475a;border-radius:12px;padding:40px 32px;text-align:center;cursor:pointer;transition:border-color 0.15s, background 0.15s;">
-        <h1 style="font-size:20px;margin-bottom:12px;">Load <code style="background:#313244;padding:1px 6px;border-radius:3px;">tables.json</code></h1>
-        <p style="margin-bottom:8px;opacity:0.8;">Drop the file here, or click to pick.</p>
-        <p style="font-size:12px;opacity:0.55;margin-bottom:24px;">It will be cached in your browser; no server, no upload.</p>
+        <h1 style="font-size:20px;margin-bottom:12px;">Load a schema</h1>
+        <p style="margin-bottom:8px;opacity:0.8;">Drop a <code style="background:#313244;padding:1px 6px;border-radius:3px;">tables.json</code> file <em>or</em> a multi-file <code style="background:#313244;padding:1px 6px;border-radius:3px;">schema/</code> folder (multi-file layout).</p>
+        <p style="font-size:12px;opacity:0.55;margin-bottom:24px;">Cached in your browser; no server, no upload. Format spec: <code style="background:#313244;padding:1px 5px;border-radius:3px;">docs/FORMAT.md</code>.</p>
         <p style="font-size:11px;opacity:0.5;">First time? Copy the bundled example:</p>
         <pre style="background:#11111b;padding:8px 12px;border-radius:6px;display:inline-block;margin-top:6px;font-size:11px;">cp tables.json.example tables.json</pre>
-        <p id="picker-error" style="color:#f38ba8;font-size:12px;margin-top:16px;min-height:1.2em;"></p>
+        <p id="picker-error" style="color:#f38ba8;font-size:12px;margin-top:16px;min-height:1.2em;white-space:pre-wrap;"></p>
         <input id="file-input" type="file" accept=".json,application/json" style="display:none;">
       </div>
     `;
@@ -1219,30 +1420,28 @@ function pickFile() {
       dz.style.background = on ? 'rgba(137,180,250,0.05)' : 'transparent';
     };
 
-    const handleFile = file => {
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        try {
-          const data = JSON.parse(reader.result);
-          if (!Array.isArray(data.tables)) throw new Error('missing "tables" array');
-          if (!Array.isArray(data.domains)) data.domains = deriveDomains(data.tables);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-          overlay.remove();
-          resolve(data);
-        } catch (e) { setError('Invalid JSON: ' + e.message); }
-      };
-      reader.onerror = () => setError('Could not read file.');
-      reader.readAsText(file);
+    const acceptRaw = (raw) => {
+      try {
+        const data = normalizeData(raw);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        overlay.remove();
+        resolve(data);
+      } catch (e) { setError('Invalid schema: ' + e.message); }
     };
 
     dz.addEventListener('click', () => input.click());
-    input.addEventListener('change', e => handleFile(e.target.files[0]));
+    input.addEventListener('change', async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try { acceptRaw(JSON.parse(await readFileAsText(file))); }
+      catch (err) { setError(err.message); }
+    });
     dz.addEventListener('dragover', e => { e.preventDefault(); setHover(true); });
     dz.addEventListener('dragleave', () => setHover(false));
-    dz.addEventListener('drop', e => {
+    dz.addEventListener('drop', async e => {
       e.preventDefault(); setHover(false);
-      handleFile(e.dataTransfer.files[0]);
+      try { acceptRaw(await readDrop(e.dataTransfer)); }
+      catch (err) { setError(err.message); }
     });
     overlay.addEventListener('dragover', e => e.preventDefault());
     overlay.addEventListener('drop', e => e.preventDefault());
@@ -1250,7 +1449,16 @@ function pickFile() {
 }
 
 async function loadData() {
-  return loadCachedData() || await pickFile();
+  if (window.__BAKED_DATA__) {
+    // Baked HTML: data is inlined, skip cache and picker entirely.
+    return normalizeData(window.__BAKED_DATA__);
+  }
+  const cached = loadCachedData();
+  if (cached) {
+    try { return normalizeData(cached); }
+    catch { /* fall through to picker if cache is unparseable */ }
+  }
+  return await pickFile();
 }
 
 function clearCachedData() {
@@ -1270,7 +1478,12 @@ async function init() {
   render();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
-  document.getElementById('reload-data-btn').addEventListener('click', clearCachedData);
+  const reloadBtn = document.getElementById('reload-data-btn');
+  if (window.__BAKED_DATA__) {
+    reloadBtn.style.display = 'none';
+  } else {
+    reloadBtn.addEventListener('click', clearCachedData);
+  }
   document.getElementById('detail-close').addEventListener('click', closeDetailPanel);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && openPanelId) closeDetailPanel();
