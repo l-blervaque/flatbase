@@ -99,6 +99,11 @@ def parse_column(item):
     if re.match(r'^\s*(PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|CONSTRAINT'
                 r'|INDEX|KEY|FULLTEXT|SPATIAL)\b', item, re.IGNORECASE):
         return None
+    if re.search(r'\bGENERATED\s+ALWAYS\s+AS\b', item, re.IGNORECASE):
+        m_name = re.match(r'^\s*[`"]?(\w+)[`"]?', item)
+        if m_name:
+            print(f'warning: generated column {m_name.group(1)!r} ignored', file=sys.stderr)
+        return None
     m = re.match(r'^\s*[`"]?(\w+)[`"]?\s+([^\s,]+(?:\s*\([^)]*\))?)', item, re.IGNORECASE)
     if not m:
         return None
@@ -107,6 +112,8 @@ def parse_column(item):
     col = {'name': name, 'type': col_type}
     if re.search(r'\bNOT\s+NULL\b', rest, re.IGNORECASE):
         col['nullable'] = False
+    else:
+        col['nullable'] = True
     if re.search(r'\bPRIMARY\s+KEY\b', rest, re.IGNORECASE):
         col['pk'] = True
     if re.search(r'\bUNIQUE\b', rest, re.IGNORECASE):
@@ -185,7 +192,9 @@ def parse_create_table(block):
                 ucols = [c.strip().strip('`"').lower() for c in m_u.group(1).split(',')]
                 if len(ucols) == 1:
                     table_unique_cols.add(ucols[0])
-        elif not re.match(r'^\s*(CHECK|INDEX|KEY)\b', item, re.IGNORECASE):
+        elif re.match(r'^\s*CHECK\b', item, re.IGNORECASE):
+            print(f'warning: {table_name}: CHECK constraint ignored', file=sys.stderr)
+        elif not re.match(r'^\s*(INDEX|KEY)\b', item, re.IGNORECASE):
             col = parse_column(item)
             if col:
                 columns.append(col)
