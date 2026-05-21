@@ -419,7 +419,7 @@ Locate this paragraph in `CLAUDE.md` (under the `## Architecture` section):
 ```markdown
 The viewer accepts **two input shapes** (see `docs/FORMAT.md` for the spec):
 1. A **single bundled JSON file** (canonical shape).
-2. A **multi-file folder drop** in the multi-file layout (`index.json` + per-domain files + optional `enums.json`) — bundled in-memory at load.
+2. A **multi-file folder drop** (`index.json` + per-domain files + optional `enums.json`) — bundled in-memory at load.
 
 Both normalize to the same internal shape. `docs/FORMAT.md` is the reference doc to hand to an LLM when generating new tables.
 ```
@@ -440,7 +440,6 @@ Locate the `## Reference docs` section. Currently:
 ## Reference docs
 
 - `docs/FORMAT.md` — canonical schema format (single-file + multi-file folder layout). Hand this to an LLM to generate new tables.
-- `docs/system-schema-structure.md` — notes on the upstream multi-file format that inspired the canonical shape.
 - `docs/superpowers/specs/2026-05-12-db-viewer-design.md` — original design spec (layout, node/edge visuals, interactions, out-of-scope list).
 - `docs/superpowers/plans/2026-05-12-db-viewer.md` — implementation plan that built the current viewer.
 ```

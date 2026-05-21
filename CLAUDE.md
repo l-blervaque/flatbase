@@ -15,7 +15,7 @@ Two files at the repo root:
 
 The viewer accepts **two input shapes** (see `docs/FORMAT.md` for the spec):
 1. A **single bundled JSON file** (canonical shape).
-2. A **multi-file folder drop** in the multi-file layout (`index.json` + per-domain files + optional `enums.json`) — bundled in-memory at load.
+2. A **multi-file folder drop** (`index.json` + per-domain files + optional `enums.json`) — bundled in-memory at load.
 
 Both normalize to the same internal shape. `docs/FORMAT.md` is the reference doc to hand to an LLM when generating new tables.
 
@@ -27,7 +27,7 @@ Both normalize to the same internal shape. `docs/FORMAT.md` is the reference doc
 
 Inside the HTML:
 
-- `DATA` is `null` at script start and populated by `init()`. **Loading model**: the viewer runs on `file://` (no server), so it cannot `fetch()` the JSON. Instead, the (already-normalized) JSON is cached in **`localStorage`** under key `flatbase.tables.json`. On first run (or after a manual reset), `pickFile()` shows a drag-drop overlay accepting either a single `tables.json` or a `schema/` folder (multi-file multi-file layout, walked via `webkitGetAsEntry`). `normalizeData()` bundles + derives relations (from `columns[].fk` / `polymorphic`) and the result is stashed in `localStorage`.
+- `DATA` is `null` at script start and populated by `init()`. **Loading model**: the viewer runs on `file://` (no server), so it cannot `fetch()` the JSON. Instead, the (already-normalized) JSON is cached in **`localStorage`** under key `flatbase.tables.json`. On first run (or after a manual reset), `pickFile()` shows a drag-drop overlay accepting either a single `tables.json` or a `schema/` folder (multi-file layout, walked via `webkitGetAsEntry`). `normalizeData()` bundles + derives relations (from `columns[].fk` / `polymorphic`) and the result is stashed in `localStorage`.
 - The header **`↻ Data`** button clears the cache and triggers the picker again — use it when `tables.json` on disk has changed.
 - Domain ordering and colors come from `DATA.domains` (an ordered list of `{id, color}`).
 - **Layout** — force-directed graph: pairwise repulsion + spring edges + center pull, run for a fixed number of iterations at load (`computePositions`, ~line 858). Positions are static after load.
@@ -67,7 +67,6 @@ Then open `db-viewer.html` in a browser. Edit the HTML or `tables.json`, reload.
 ## Reference docs
 
 - `docs/FORMAT.md` — canonical schema format (single-file + multi-file folder layout). Hand this to an LLM to generate new tables.
-- `docs/system-schema-structure.md` — notes on the upstream multi-file format that inspired the canonical shape.
 - `docs/superpowers/specs/2026-05-12-db-viewer-design.md` — original design spec (layout, node/edge visuals, interactions, out-of-scope list).
 - `docs/superpowers/plans/2026-05-12-db-viewer.md` — implementation plan that built the current viewer.
 - `docs/superpowers/specs/2026-05-21-export-frozen-html-design.md` — design spec for the ↓ Export / frozen-HTML feature.

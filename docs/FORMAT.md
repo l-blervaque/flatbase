@@ -4,7 +4,7 @@ The viewer accepts either:
 
 - **Single bundled file** — one JSON file (e.g. `tables.json`) following the
   canonical shape described here.
-- **Multi-file folder** (multi-file) — a directory drop containing
+- **Multi-file folder** — a directory drop containing
   `index.json`, one file per domain, and (optionally) `enums.json`. The loader
   bundles it into the canonical shape in memory.
 
@@ -159,7 +159,7 @@ chosen — useful for STI-style modelling.
 
 ---
 
-## Multi-file (flatbase) layout
+## Multi-file layout
 
 A folder drop is accepted with this structure:
 
