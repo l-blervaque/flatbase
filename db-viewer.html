@@ -1463,6 +1463,15 @@ function slugifyMeta(meta) {
 // document's <style> and main <script> so the output stays in sync with
 // the source file automatically.
 function buildFrozenHTML(data) {
+  // Inside this function we MUST NOT write the literal byte sequence
+  // `<` + `/script>` in any comment or template — the HTML parser
+  // scanning db-viewer.html in script-data state would treat it as
+  // the closing tag of THIS script and abort parsing. Regex literals
+  // are safe because `<\/` breaks the match. Strings emitted at
+  // runtime use SC, built from concatenation so the source bytes
+  // never form the dangerous sequence.
+  const SC = '</' + 'script>';
+
   const styleText  = document.querySelector('style').textContent;
   const scriptText = document.querySelector('script').textContent;
   const slug       = slugifyMeta(data.meta);
@@ -1470,8 +1479,8 @@ function buildFrozenHTML(data) {
     ? `flatbase — ${slug}`
     : 'flatbase';
 
-  // Escape </script> in the JSON so the inline data block can't be
-  // closed prematurely by user-authored strings.
+  // User-authored strings might contain the close-script sequence — escape
+  // it so the inline data block can't be closed prematurely in the export.
   const jsonText = JSON.stringify(data).replace(/<\/script>/gi, '<\\/script>');
 
   // Hardcoded body skeleton — must match the source file's <body> markup
@@ -1513,8 +1522,8 @@ function buildFrozenHTML(data) {
 </head>
 <body>
 ${bodyMarkup}
-<script>window.__BAKED_DATA__ = ${jsonText};</script>
-<script>${scriptText}</script>
+<script>window.__BAKED_DATA__ = ${jsonText};${SC}
+<script>${scriptText}${SC}
 </body>
 </html>
 `;
