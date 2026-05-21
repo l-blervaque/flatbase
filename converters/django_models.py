@@ -115,6 +115,18 @@ def parse_field_args(args_str):
     return result
 
 def extract_target(args_str):
+    # 'self' FK — not representable in flatbase
+    if args_str.strip().startswith(("'self'", '"self"')) or re.search(r'\bto\s*=\s*[\'"]self[\'"]', args_str):
+        print('warning: self-referential ForeignKey skipped', file=sys.stderr)
+        return None
+    # to= keyword form (common in real Django projects)
+    m = re.search(r'\bto\s*=\s*[\'"](?:\w+\.)?(\w+)[\'"]', args_str)
+    if m:
+        return m.group(1).lower()
+    m = re.search(r'\bto\s*=\s*(\w+)', args_str)
+    if m and m.group(1) not in ('None', 'null', 'self'):
+        return m.group(1).lower()
+    # Positional string or bare class name
     m = re.match(r"\s*['\"](?:\w+\.)?(\w+)['\"]", args_str)
     if m:
         return m.group(1).lower()
@@ -123,6 +135,25 @@ def extract_target(args_str):
                                  'related_name', 'to', 'db_column'):
         return m.group(1).lower()
     return None
+
+def join_logical_lines(text):
+    result = []
+    buf = ''
+    depth = 0
+    for line in text.split('\n'):
+        stripped = line.strip()
+        if buf:
+            buf += ' ' + stripped
+        else:
+            buf = line
+        depth += stripped.count('(') - stripped.count(')')
+        if depth <= 0:
+            result.append(buf)
+            buf = ''
+            depth = 0
+    if buf:
+        result.append(buf)
+    return '\n'.join(result)
 
 def parse_django_models(content):
     if 'models.Model' not in content:
@@ -148,6 +179,9 @@ def parse_django_models(content):
         columns = []
         has_explicit_pk = False
 
+        # join continuation lines so multi-line field defs are handled
+        block = join_logical_lines(block)
+
         for line in block.split('\n'):
             line = line.strip()
             if not line or line.startswith('#'):
@@ -165,6 +199,7 @@ def parse_django_models(content):
             kwargs = parse_field_args(args_str)
 
             if field_type == 'ManyToManyField':
+                print(f'warning: ManyToManyField {field_name!r} skipped (not representable in flatbase)', file=sys.stderr)
                 continue
 
             if field_type in ('ForeignKey', 'OneToOneField'):
@@ -224,7 +259,10 @@ def main():
         validate_extension(f)
     tables_by_domain = {}
     for f in files:
-        tables_by_domain[infer_domain(f)] = parse_django_models(read_file(f))
+        domain = infer_domain(f)
+        if domain in tables_by_domain:
+            print(f'warning: duplicate domain {domain!r} from {f!r}, overwriting', file=sys.stderr)
+        tables_by_domain[domain] = parse_django_models(read_file(f))
     write_output(build_output(tables_by_domain), args.out)
 
 if __name__ == '__main__':
