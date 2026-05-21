@@ -99,12 +99,12 @@ def parse_column(item):
     if re.match(r'^\s*(PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|CONSTRAINT'
                 r'|INDEX|KEY|FULLTEXT|SPATIAL)\b', item, re.IGNORECASE):
         return None
-    if re.search(r'\bGENERATED\s+ALWAYS\s+AS\b', item, re.IGNORECASE):
+    if re.search(r'\bGENERATED\s+ALWAYS\s+AS\s*\(', item, re.IGNORECASE):
         m_name = re.match(r'^\s*[`"]?(\w+)[`"]?', item)
         if m_name:
             print(f'warning: generated column {m_name.group(1)!r} ignored', file=sys.stderr)
         return None
-    m = re.match(r'^\s*[`"]?(\w+)[`"]?\s+([^\s,]+(?:\s*\([^)]*\))?)', item, re.IGNORECASE)
+    m = re.match(r'^\s*[`"]?(\w+)[`"]?\s+(\w+(?:\s*\([\w\s,]+\))?)', item, re.IGNORECASE)
     if not m:
         return None
     name, col_type = m.group(1).lower(), m.group(2).strip()
@@ -181,6 +181,9 @@ def parse_create_table(block):
                 item, re.IGNORECASE)
             if m_fk:
                 cols = [c.strip().strip('`"').lower() for c in m_fk.group(1).split(',')]
+                if len(cols) > 1:
+                    print(f'warning: {table_name}: multi-column FK ignored', file=sys.stderr)
+                    continue
                 ref_t = m_fk.group(2).lower()
                 ref_c = m_fk.group(3).strip().lower() if m_fk.group(3) else 'id'
                 od = m_fk.group(4).lower().replace(' ', '_') if m_fk.group(4) else None
@@ -256,7 +259,10 @@ def main():
     tables_by_domain, all_enums = {}, []
     for f in files:
         tables, enums = parse_sql(read_file(f))
-        tables_by_domain[infer_domain(f)] = tables
+        domain = infer_domain(f)
+        if domain in tables_by_domain:
+            print(f'warning: duplicate domain {domain!r} from {f!r}, overwriting previous', file=sys.stderr)
+        tables_by_domain[domain] = tables
         all_enums.extend(enums)
     write_output(build_output(tables_by_domain, all_enums or None), args.out)
 
