@@ -26,8 +26,7 @@ def build_output(tables_by_domain, enums=None):
     all_tables = []
     for domain, tables in tables_by_domain.items():
         for t in tables:
-            t['domain'] = domain
-            all_tables.append(t)
+            all_tables.append({**t, 'domain': domain})
     out = {'meta': {'source': CONVERTER_NAME, 'converted_at': date.today().isoformat()},
            'tables': all_tables}
     if enums:
@@ -91,6 +90,7 @@ def parse_model(block):
     lines = block.split('\n')
     columns = []
     composite_pk = []
+    composite_unique = set()
     relation_fks = {}  # scalar_field_name -> (target_table, ref_col)
 
     for line in lines[1:]:
@@ -109,9 +109,7 @@ def parse_model(block):
         if m_uniq:
             ucols = [f.strip() for f in m_uniq.group(1).split(',')]
             if len(ucols) == 1:
-                for col in columns:
-                    if col['name'] == ucols[0]:
-                        col['unique'] = True
+                composite_unique.add(ucols[0])
             continue
 
         if line.startswith('@@'):
@@ -134,7 +132,7 @@ def parse_model(block):
                 col['pk'] = True
             if '@unique' in attrs:
                 col['unique'] = True
-            m_def = re.search(r'@default\(([^)]+)\)', attrs)
+            m_def = re.search(r'@default\(([^()]*(?:\([^()]*\))?[^()]*)\)', attrs)
             if m_def:
                 col['default'] = m_def.group(1).strip('"\'')
             columns.append(col)
@@ -149,7 +147,16 @@ def parse_model(block):
                 fk_fields = [f.strip() for f in m_rel.group(1).split(',')]
                 ref_fields = [f.strip() for f in m_rel.group(2).split(',')]
                 for fk_f, ref_f in zip(fk_fields, ref_fields):
-                    relation_fks[fk_f] = (ftype.lower(), ref_f)
+                    relation_fks[fk_f] = (camel_to_snake(ftype), ref_f)
+            else:
+                # No @relation → treat as enum or unsupported scalar type
+                col = {'name': fname, 'type': ftype}
+                col['nullable'] = nullable
+                if '@id' in attrs:
+                    col['pk'] = True
+                if '@unique' in attrs:
+                    col['unique'] = True
+                columns.append(col)
 
     # Apply relation FKs to scalar columns
     for col in columns:
@@ -160,10 +167,12 @@ def parse_model(block):
             else:
                 col['fk'] = {'table': target_table, 'column': ref_col}
 
-    # Apply composite PK
+    # Apply composite PK and unique
     for col in columns:
         if col['name'] in composite_pk:
             col['pk'] = True
+        if col['name'] in composite_unique:
+            col['unique'] = True
 
     return {
         'id': camel_to_snake(model_name),
