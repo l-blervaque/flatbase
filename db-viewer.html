@@ -1449,8 +1449,89 @@ function pickFile() {
   });
 }
 
+function slugifyMeta(meta) {
+  const src = (meta && (meta.version || meta.scope)) || 'schema';
+  return String(src)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'schema';
+}
+
+// Produces a self-contained HTML string that, when opened, runs the same
+// viewer with DATA baked in as window.__BAKED_DATA__. Reads the live
+// document's <style> and main <script> so the output stays in sync with
+// the source file automatically.
+function buildFrozenHTML(data) {
+  const styleText  = document.querySelector('style').textContent;
+  const scriptText = document.querySelector('script').textContent;
+  const slug       = slugifyMeta(data.meta);
+  const title      = data.meta && (data.meta.scope || data.meta.version)
+    ? `flatbase — ${slug}`
+    : 'flatbase';
+
+  // Escape </script> in the JSON so the inline data block can't be
+  // closed prematurely by user-authored strings.
+  const jsonText = JSON.stringify(data).replace(/<\/script>/gi, '<\\/script>');
+
+  // Hardcoded body skeleton — must match the source file's <body> markup
+  // (minus runtime-injected children). Keep in sync if the source body
+  // structure changes.
+  const bodyMarkup = `
+<header id="header">
+  <span class="app-title">flatbase <small>v0.5</small></span>
+  <div id="domain-filters"></div>
+  <button id="reset-btn">Reset</button>
+  <button id="reload-data-btn" title="Load a different tables.json">↻ Data</button>
+  <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+</header>
+
+<div id="main">
+  <nav id="sidebar"></nav>
+  <div id="diagram-wrap">
+    <svg id="diagram">
+      <defs id="svg-defs"></defs>
+    </svg>
+  </div>
+</div>
+
+<aside id="detail-panel" class="closed">
+  <header>
+    <h2 id="detail-name-en"></h2>
+    <button id="detail-close" aria-label="Close">×</button>
+  </header>
+  <div id="detail-body"></div>
+</aside>`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title}</title>
+<style>${styleText}</style>
+</head>
+<body>
+${bodyMarkup}
+<script>window.__BAKED_DATA__ = ${jsonText};</script>
+<script>${scriptText}</script>
+</body>
+</html>
+`;
+}
+
 function exportFrozenHTML() {
-  alert('export: not implemented yet');
+  if (!DATA) return;
+  const html = buildFrozenHTML(DATA);
+  const blob = new Blob([html], { type: 'text/html' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `flatbase-${slugifyMeta(DATA.meta)}.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 async function loadData() {
