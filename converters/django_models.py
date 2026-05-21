@@ -123,7 +123,7 @@ def extract_target(args_str):
     m = re.search(r'\bto\s*=\s*[\'"](?:\w+\.)?(\w+)[\'"]', args_str)
     if m:
         return m.group(1).lower()
-    m = re.search(r'\bto\s*=\s*(\w+)', args_str)
+    m = re.search(r'\bto\s*=\s*(\w+)(?!\.)', args_str)
     if m and m.group(1) not in ('None', 'null', 'self'):
         return m.group(1).lower()
     # Positional string or bare class name
