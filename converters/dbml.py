@@ -116,7 +116,9 @@ def parse_dbml(content):
             line = line.strip()
             if not line or line.startswith('//'):
                 continue
-            if re.match(r'^(indexes|note)\b', line, re.IGNORECASE):
+            if re.match(r'^note\b', line, re.IGNORECASE):
+                continue
+            if re.match(r'^indexes\b', line, re.IGNORECASE):
                 break
 
             m_col = re.match(r'^(\w+)\s+(\S+)(?:\s+\[([^\]]*)\])?', line)
