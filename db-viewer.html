@@ -50,7 +50,7 @@
     .domain-chip.off { opacity: 0.35; }
     .domain-chip input { accent-color: #fff; cursor: pointer; }
 
-    #reset-btn, #reload-data-btn {
+    #reset-btn, #export-btn, #reload-data-btn {
       background: #313244;
       color: #cdd6f4;
       border: 1px solid #45475a;
@@ -60,7 +60,7 @@
       font-size: 12px;
       white-space: nowrap;
     }
-    #reset-btn:hover, #reload-data-btn:hover { background: #45475a; }
+    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover { background: #45475a; }
 
     #main {
       display: flex;
@@ -322,6 +322,7 @@
   <div id="domain-filters"></div>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json">↻ Data</button>
+  <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
 </header>
 
 <div id="main">
@@ -1448,6 +1449,10 @@ function pickFile() {
   });
 }
 
+function exportFrozenHTML() {
+  alert('export: not implemented yet');
+}
+
 async function loadData() {
   if (window.__BAKED_DATA__) {
     // Baked HTML: data is inlined, skip cache and picker entirely.
@@ -1478,6 +1483,7 @@ async function init() {
   render();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
+  document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
   const reloadBtn = document.getElementById('reload-data-btn');
   if (window.__BAKED_DATA__) {
     reloadBtn.style.display = 'none';
