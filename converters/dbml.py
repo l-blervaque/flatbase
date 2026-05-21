@@ -93,12 +93,15 @@ def parse_dbml(content):
     # Enum blocks
     for m in re.finditer(r'[Ee]num\s+(\w+)\s*\{([^}]+)\}', content, re.DOTALL):
         values = []
-        for line in m.group(2).split('\n'):
-            line = line.strip()
-            if line and not line.startswith('//') and not line.lower().startswith('note'):
-                code = re.match(r'^(\w+)', line)
-                if code:
-                    values.append({'code': code.group(1)})
+        body = m.group(2)
+        # Strip line comments first
+        body = re.sub(r'//[^\n]*', '', body)
+        # Strip note: ... lines
+        body = re.sub(r'\bnote\b[^\n]*', '', body, flags=re.IGNORECASE)
+        for token in re.split(r'[\s,]+', body):
+            token = token.strip()
+            if token and re.match(r'^\w+$', token):
+                values.append({'code': token})
         if values:
             enums.append({'id': m.group(1).lower(), 'values': values})
 

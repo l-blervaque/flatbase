@@ -77,6 +77,8 @@ Table orders { id uuid [pk] }
     r = run(['-'], stdin=dbml)
     out = json.loads(r.stdout)
     assert out['enums'][0]['id'] == 'order_status'
+    codes = [v['code'] for v in out['enums'][0]['values']]
+    assert codes == ['pending', 'paid', 'shipped']
 
 def test_wrong_extension():
     r = run(['schema.sql'])
