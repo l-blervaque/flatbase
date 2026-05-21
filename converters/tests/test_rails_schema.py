@@ -41,7 +41,7 @@ end
     out = json.loads(r.stdout)
     cols = {c['name']: c for c in out['tables'][0]['columns']}
     assert 'customer_id' in cols
-    assert cols['customer_id']['fk'] == 'customer'
+    assert cols['customer_id']['fk'] == 'customers'
 
 def test_add_foreign_key():
     rb = """

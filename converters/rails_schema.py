@@ -91,8 +91,8 @@ def parse_rails_schema(content):
     tables = []
 
     for m in re.finditer(
-            r'create_table\s+"(\w+)"(.*?)do\s*\|t\|(.*?)end\b',
-            content, re.DOTALL | re.IGNORECASE):
+            r'create_table\s+"(\w+)"(.*?)do\s*\|t\|(.*?)^\s*end\b',
+            content, re.DOTALL | re.MULTILINE | re.IGNORECASE):
         table_name = m.group(1)
         options = m.group(2)
         body = m.group(3)
@@ -108,11 +108,11 @@ def parse_rails_schema(content):
             if not line or line.startswith('#'):
                 continue
 
-            m_ref = re.match(r't\.references\s+"(\w+)"(.*)?$', line)
+            m_ref = re.match(r't\.references\s+(?:"(\w+)"|:(\w+))(.*)?$', line)
             if m_ref:
-                ref_name = m_ref.group(1)
-                ref_opts = m_ref.group(2) or ''
-                col = {'name': f'{ref_name}_id', 'type': 'bigint', 'fk': ref_name}
+                ref_name = m_ref.group(1) or m_ref.group(2)
+                ref_opts = m_ref.group(3) or ''
+                col = {'name': f'{ref_name}_id', 'type': 'bigint', 'fk': f'{ref_name}s'}
                 if 'null: false' in ref_opts:
                     col['nullable'] = False
                 else:
