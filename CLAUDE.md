@@ -62,6 +62,7 @@ Then open `db-viewer.html` in a browser. Edit the HTML or `tables.json`, reload.
 - **Relation types**: `belongs_to`, `has_one`, `has_many`, `many_to_many`, `extends`, `polymorphic` (uses `targets: [...]` instead of `target`; `"*"` means all tables).
 - **Columns** (optional, per table) — rendered in the detail panel when present. Each entry is either a plain string (just the name) or an object: `{ name, type?, nullable?, pk?, fk?, unique?, enum_ref?, polymorphic?, notes? }`. `fk` is either a string (`"other_table_id"`) or an object (`{ table, column?, on_delete? }`); both produce a clickable badge that navigates to the target table.
 - **Out of scope** for the viewer (per design spec): zoom/pan, drag-to-reposition, persistence, editing the data, filtering by type/modeled. Push back if asked to add these without context.
+- **No literal `</script>` in the viewer's script body.** The whole viewer lives inside one inline `<script>` tag, so the HTML parser is in script-data state while scanning it. Any literal `<` + `/script>` byte sequence — even inside a JS comment or a template literal — ends the script tag prematurely and breaks the source viewer. Regex literals like `/<\/script>/gi` are safe (the `\` between `<` and `/` prevents the match). When the output of `buildFrozenHTML` needs to embed real closing-script tags, build them at runtime via `const SC = '</' + 'script>'` and interpolate `${SC}` into the template.
 
 ## Reference docs
 
