@@ -156,17 +156,34 @@
     .node.highlighted rect { stroke-width: 3; stroke: #f59e0b !important; }
     .node text { pointer-events: none; }
 
-    .edge { pointer-events: none; opacity: 0.55; transition: opacity 0.15s; }
-    .edge text { opacity: 0; transition: opacity 0.15s; }
+    .edge { opacity: 0.55; transition: opacity 0.15s; }
+    .edge > path:not(.hit-path), .edge text { pointer-events: none; }
+    .edge > path.hit-path { pointer-events: stroke; stroke: transparent; fill: none; cursor: default; }
+    .edge text { opacity: 0; transition: opacity 0.15s; pointer-events: none; }
+    .edge .cardinality { fill: #1e293b; }
+    .edge .cardinality-bg {
+      fill: #ffffff;
+      stroke: #cbd5e1;
+      stroke-width: 0.8;
+      opacity: 0;
+      transition: opacity 0.15s;
+      pointer-events: fill;
+    }
     .edge.hidden { display: none; }
+
+    /* Labels (type label + cardinality badge) are revealed only by directly hovering the edge
+       or via a detail-pane pair/bundle highlight. Hovering a connected node does not reveal them. */
+    .edge:hover text,
+    .edge:hover .cardinality-bg,
+    .edge.is-pair text,
+    .edge.is-pair .cardinality-bg { opacity: 1; }
 
     /* When something is being hovered, dim everything by default */
     body.hovering .edge { opacity: 0.12; }
     body.hovering .edge.is-touching { opacity: 1; }
-    body.hovering .edge.is-touching text { opacity: 1; }
     body.hovering .node:not(.is-touching-hover) rect { opacity: 0.45; }
 
-    /* Hover originating from the detail pane: overlay an orange emphasis on the specific link,
+    /* Hover originating from the detail pane: overlay an orange emphasis on the specific link(s),
        while the selected table's normal neighborhood highlight stays intact. */
     body.hovering-from-detail .node.is-pair rect {
       stroke: #f97316 !important;
@@ -264,6 +281,14 @@
       font-weight: 600;
       color: #2d3748;
     }
+    .detail-relation .rel-self {
+      font-weight: 600;
+      color: #92400e;
+      background: #fef3c7;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-style: italic;
+    }
     .detail-relation.navigable {
       cursor: pointer;
       transition: background 0.12s, border-left-color 0.12s;
@@ -274,6 +299,23 @@
       border-left-color: #f97316;
     }
     .detail-relation .rel-label { color: #718096; font-style: italic; font-size: 11px; }
+    .detail-relation.poly { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-left-color: #f59e0b; }
+    .detail-relation.poly .rel-poly-label { font-weight: 600; color: #2d3748; }
+    .detail-relation.poly .rel-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .rel-chip {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 10px;
+      background: #edf2f7;
+      color: #2d3748;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .rel-chip.navigable { cursor: pointer; color: #3182ce; transition: background 0.12s; }
+    .rel-chip.navigable:hover { background: #fff7ed; color: #c2410c; }
+    .rel-chip-wildcard { background: #fef3c7; color: #92400e; font-style: italic; }
+    .detail-relation.detail-relation-bundle { cursor: default; transition: background 0.12s, border-left-color 0.12s; }
+    .detail-relation.detail-relation-bundle:hover { background: #fff7ed; border-left-color: #f97316; }
     .detail-notes {
       padding: 8px 10px;
       background: #fffaf0;
@@ -524,28 +566,27 @@ function computePositions() {
 function computeAnchors(fromPos, toPos) {
   const fcx = fromPos.x + NODE_W / 2;
   const fcy = fromPos.y + NODE_H / 2;
-  const tcx = toPos.x + NODE_W / 2;
-  const tcy = toPos.y + NODE_H / 2;
+  const tcx = toPos.x   + NODE_W / 2;
+  const tcy = toPos.y   + NODE_H / 2;
   const dx = tcx - fcx;
   const dy = tcy - fcy;
 
-  // Choose dominant axis
   let fromAnchor, toAnchor;
   if (Math.abs(dx) >= Math.abs(dy)) {
     if (dx >= 0) {
       fromAnchor = { x: fromPos.x + NODE_W, y: fcy, side: 'right' };
-      toAnchor   = { x: toPos.x,           y: tcy, side: 'left'  };
+      toAnchor   = { x: toPos.x,            y: tcy, side: 'left'  };
     } else {
-      fromAnchor = { x: fromPos.x,         y: fcy, side: 'left'  };
-      toAnchor   = { x: toPos.x + NODE_W,  y: tcy, side: 'right' };
+      fromAnchor = { x: fromPos.x,          y: fcy, side: 'left'  };
+      toAnchor   = { x: toPos.x + NODE_W,   y: tcy, side: 'right' };
     }
   } else {
     if (dy >= 0) {
       fromAnchor = { x: fcx, y: fromPos.y + NODE_H, side: 'bottom' };
-      toAnchor   = { x: tcx, y: toPos.y,           side: 'top'    };
+      toAnchor   = { x: tcx, y: toPos.y,            side: 'top'    };
     } else {
-      fromAnchor = { x: fcx, y: fromPos.y,         side: 'top'    };
-      toAnchor   = { x: tcx, y: toPos.y + NODE_H,  side: 'bottom' };
+      fromAnchor = { x: fcx, y: fromPos.y,          side: 'top'    };
+      toAnchor   = { x: tcx, y: toPos.y + NODE_H,   side: 'bottom' };
     }
   }
   return { from: fromAnchor, to: toAnchor };
@@ -675,6 +716,97 @@ function setupDefs() {
   defs.appendChild(markerStart);
 }
 
+function findFKCol(childTableId, parentTableId, labelHint) {
+  const child = DATA.tables.find(t => t.id === childTableId);
+  if (!child || !Array.isArray(child.columns)) return null;
+  const matches = [];
+  for (const col of child.columns) {
+    if (!col || typeof col !== 'object') continue;
+    const fkTarget = typeof col.fk === 'string' ? col.fk : (col.fk && col.fk.table);
+    if (fkTarget === parentTableId) matches.push(col);
+  }
+  if (matches.length === 0) return null;
+  if (labelHint) {
+    const hit = matches.find(c => c.name === labelHint);
+    if (hit) return hit;
+  }
+  return matches[0];
+}
+
+function cardinalityFor(edge) {
+  switch (edge.type) {
+    case 'has_many': {
+      const fk = findFKCol(edge.to, edge.from, edge.label);
+      const min = fk && fk.nullable === false ? 1 : 0;
+      return { from: '(0,n)', to: `(${min},1)` };
+    }
+    case 'has_one': {
+      const fk = findFKCol(edge.to, edge.from, edge.label);
+      const min = fk && fk.nullable === false ? 1 : 0;
+      return { from: '(0,1)', to: `(${min},1)` };
+    }
+    case 'extends':
+      return { from: '(0,1)', to: '(1,1)' };
+    case 'many_to_many':
+      return { from: '(0,n)', to: '(0,n)' };
+    case 'polymorphic': {
+      const owner = DATA.tables.find(t => t.id === edge.from);
+      let min = 1;
+      if (owner && Array.isArray(owner.columns)) {
+        const col = owner.columns.find(c => c && typeof c === 'object' && c.polymorphic && c.name === edge.label);
+        if (col && col.nullable === true) min = 0;
+      }
+      return { from: '(0,n)', to: `(${min},1)` };
+    }
+    default:
+      return null;
+  }
+}
+
+function cardinalityLabelOffset(side, dist) {
+  switch (side) {
+    case 'right':  return { dx: dist,      dy: -4, anchor: 'start' };
+    case 'left':   return { dx: -dist,     dy: -4, anchor: 'end'   };
+    case 'top':    return { dx: 0,         dy: -dist, anchor: 'middle' };
+    case 'bottom': return { dx: 0,         dy: dist + 10, anchor: 'middle' };
+  }
+  return { dx: 0, dy: 0, anchor: 'middle' };
+}
+
+function appendCardinalityBadge(parent, cx, cy, textAnchor, text) {
+  // White rounded background + readable text — placed so it stays legible when crammed
+  // between two close tables.
+  const FONT = 11;
+  const charW = 6.4;
+  const padX = 4;
+  const padY = 2;
+  const w = text.length * charW + padX * 2;
+  const h = FONT + padY * 2;
+  let x = cx;
+  if (textAnchor === 'middle') x = cx - w / 2;
+  else if (textAnchor === 'end') x = cx - w;
+  const y = cy - h + padY + 2;
+
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('class', 'cardinality-bg');
+  rect.setAttribute('x', x);
+  rect.setAttribute('y', y);
+  rect.setAttribute('width', w);
+  rect.setAttribute('height', h);
+  rect.setAttribute('rx', 3);
+  parent.appendChild(rect);
+
+  const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t.setAttribute('class', 'cardinality');
+  t.setAttribute('x', cx);
+  t.setAttribute('y', cy);
+  t.setAttribute('font-size', FONT);
+  t.setAttribute('font-weight', '600');
+  t.setAttribute('text-anchor', textAnchor);
+  t.textContent = text;
+  parent.appendChild(t);
+}
+
 function collectEdges() {
   const seen = new Set();
   const edges = [];
@@ -714,22 +846,39 @@ function renderEdges(visibleIds) {
 
     const fromPos = positions[edge.from];
     const toPos = positions[edge.to];
+    const isSelf = edge.from === edge.to;
 
-    const { from: a, to: b } = computeAnchors(fromPos, toPos);
-    const x1 = a.x, y1 = a.y;
-    const x2 = b.x, y2 = b.y;
-
-    // Pick control points to bend out from the node side
+    let x1, y1, x2, y2, cx1, cy1, cx2, cy2;
+    let fromSide = null, toSide = null;
     const CTL = 60;
-    let cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2;
-    if (a.side === 'right')  cx1 = x1 + CTL;
-    if (a.side === 'left')   cx1 = x1 - CTL;
-    if (a.side === 'top')    cy1 = y1 - CTL;
-    if (a.side === 'bottom') cy1 = y1 + CTL;
-    if (b.side === 'right')  cx2 = x2 + CTL;
-    if (b.side === 'left')   cx2 = x2 - CTL;
-    if (b.side === 'top')    cy2 = y2 - CTL;
-    if (b.side === 'bottom') cy2 = y2 + CTL;
+    if (isSelf) {
+      // Self-relation: draw a small loop bulging out to the right of the node.
+      const right = fromPos.x + NODE_W;
+      const yTop = fromPos.y + NODE_H * 0.3;
+      const yBot = fromPos.y + NODE_H * 0.7;
+      x1 = right; y1 = yTop;
+      x2 = right; y2 = yBot;
+      const LOOP_OUT = 70;
+      const LOOP_FLARE = 30;
+      cx1 = right + LOOP_OUT; cy1 = yTop - LOOP_FLARE;
+      cx2 = right + LOOP_OUT; cy2 = yBot + LOOP_FLARE;
+      fromSide = 'right'; toSide = 'right';
+    } else {
+      const { from: a, to: b } = computeAnchors(fromPos, toPos);
+      x1 = a.x; y1 = a.y;
+      x2 = b.x; y2 = b.y;
+      fromSide = a.side; toSide = b.side;
+
+      cx1 = x1; cy1 = y1; cx2 = x2; cy2 = y2;
+      if (a.side === 'right')  cx1 = x1 + CTL;
+      if (a.side === 'left')   cx1 = x1 - CTL;
+      if (a.side === 'top')    cy1 = y1 - CTL;
+      if (a.side === 'bottom') cy1 = y1 + CTL;
+      if (b.side === 'right')  cx2 = x2 + CTL;
+      if (b.side === 'left')   cx2 = x2 - CTL;
+      if (b.side === 'top')    cy2 = y2 - CTL;
+      if (b.side === 'bottom') cy2 = y2 + CTL;
+    }
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.classList.add('edge');
@@ -737,8 +886,13 @@ function renderEdges(visibleIds) {
     g.dataset.to = edge.to;
     if (!bothVisible) g.classList.add('hidden');
 
+    const d = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+    const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    hit.setAttribute('d', d);
+    hit.setAttribute('class', 'hit-path');
+    hit.setAttribute('stroke-width', '14');
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`);
+    path.setAttribute('d', d);
     path.setAttribute('fill', 'none');
     path.setAttribute('stroke', '#bbb');
     path.setAttribute('stroke-width', '1.5');
@@ -757,15 +911,33 @@ function renderEdges(visibleIds) {
     }
 
     g.appendChild(path);
+    g.appendChild(hit); // last so the wide invisible stroke is on top for hit testing
 
     const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    label.setAttribute('x', (x1 + x2) / 2);
-    label.setAttribute('y', (y1 + y2) / 2 - 4);
+    if (isSelf) {
+      // Anchor near the bulge of the loop, slightly to the right of the node.
+      label.setAttribute('x', Math.max(cx1, cx2) + 4);
+      label.setAttribute('y', (y1 + y2) / 2 + 3);
+      label.setAttribute('text-anchor', 'start');
+    } else {
+      label.setAttribute('x', (x1 + x2) / 2);
+      label.setAttribute('y', (y1 + y2) / 2 - 4);
+      label.setAttribute('text-anchor', 'middle');
+    }
     label.setAttribute('font-size', '9');
-    label.setAttribute('text-anchor', 'middle');
     label.setAttribute('fill', '#999');
     label.textContent = edge.label;
     g.appendChild(label);
+
+    if (!isSelf) {
+      const card = cardinalityFor(edge);
+      if (card) {
+        const fo = cardinalityLabelOffset(fromSide, 20);
+        const to_ = cardinalityLabelOffset(toSide, 20);
+        appendCardinalityBadge(g, x1 + fo.dx, y1 + fo.dy, fo.anchor, card.from);
+        appendCardinalityBadge(g, x2 + to_.dx, y2 + to_.dy, to_.anchor, card.to);
+      }
+    }
 
     const firstNode = svg.querySelector('.node');
     svg.insertBefore(g, firstNode);
@@ -863,17 +1035,49 @@ function openDetailPanel(id) {
   const color = DOMAIN_COLORS[table.domain] || '#999';
   const body = document.getElementById('detail-body');
 
-  const outgoing = (table.relations || []).flatMap(rel => {
-    const targets = rel.targets
-      ? rel.targets.filter(t => t !== '*')
-      : (rel.target ? [rel.target] : []);
-    return targets.map(tgt => ({ to: tgt, type: rel.type, label: rel.label }));
-  });
-  const incoming = inverseRelations[id] || [];
-
   const tableById = Object.fromEntries(DATA.tables.map(t => [t.id, t]));
 
+  // Outgoing — polymorphic relations are collapsed into one grouped row.
+  const outgoing = [];
+  for (const rel of (table.relations || [])) {
+    if (rel.type === 'polymorphic') {
+      const raw = rel.targets || [];
+      const hasWildcard = raw.includes('*');
+      const targets = raw.filter(t => t !== '*' && tableById[t]);
+      if (targets.length === 0 && !hasWildcard) continue;
+      outgoing.push({ poly: true, type: 'polymorphic', label: rel.label, targets, hasWildcard });
+    } else {
+      const targets = rel.targets
+        ? rel.targets.filter(t => t !== '*')
+        : (rel.target ? [rel.target] : []);
+      for (const tgt of targets) outgoing.push({ poly: false, to: tgt, type: rel.type, label: rel.label });
+    }
+  }
+  const incoming = inverseRelations[id] || [];
+
   function relRow(rel, isOutgoing) {
+    if (rel.poly) {
+      const wildcardChip = rel.hasWildcard
+        ? `<span class="rel-chip rel-chip-wildcard" title="targets any table">any</span>`
+        : '';
+      const chips = rel.targets.map(tgt => {
+        const name = tableById[tgt] ? tableById[tgt].name : tgt;
+        return `<span class="rel-chip navigable" data-target="${escapeHtml(tgt)}">${escapeHtml(name)}</span>`;
+      }).join('');
+      const hasNavigableTargets = rel.targets.length > 0;
+      const bundleAttr = hasNavigableTargets
+        ? ` data-bundle-targets="${escapeHtml(rel.targets.join(','))}"`
+        : '';
+      const cls = hasNavigableTargets ? ' detail-relation-bundle' : '';
+      return `
+        <div class="detail-relation poly${cls}"${bundleAttr}>
+          <span class="rel-type">polymorphic</span>
+          <span class="rel-poly-label">${escapeHtml(rel.label || '')}</span>
+          →
+          <span class="rel-chips">${chips}${wildcardChip}</span>
+        </div>
+      `;
+    }
     const other = isOutgoing ? rel.to : rel.from;
     const otherTable = tableById[other];
     const otherName = otherTable ? otherTable.name : other;
@@ -881,14 +1085,18 @@ function openDetailPanel(id) {
       ? `<span class="rel-label">"${escapeHtml(rel.label)}"</span>`
       : '';
     const navAttr = otherTable ? ` data-target="${escapeHtml(other)}"` : '';
+    // Reading direction follows the relation's actual subject:
+    //   outgoing: "this [type] → {other}"   → we [type] them
+    //   incoming: "{other} [type] → this"   → they [type] us
+    const typeSpan = `<span class="rel-type">${escapeHtml(rel.type)}</span>`;
+    const otherSpan = `<span class="rel-target">${escapeHtml(otherName)}</span>`;
+    const selfSpan = `<span class="rel-self">this</span>`;
+    const body = isOutgoing
+      ? `${selfSpan} ${typeSpan} → ${otherSpan} ${labelHtml}`
+      : `${otherSpan} ${typeSpan} → ${selfSpan} ${labelHtml}`;
     return `
       <div class="detail-relation${otherTable ? ' navigable' : ''}"${navAttr}>
-        <span class="rel-type">${escapeHtml(rel.type)}</span>
-        →
-        <span class="rel-target">
-          ${escapeHtml(otherName)}
-        </span>
-        ${labelHtml}
+        ${body}
       </div>
     `;
   }
@@ -979,8 +1187,15 @@ function openDetailPanel(id) {
   body.querySelectorAll('.navigable[data-target]').forEach(el => {
     const tgt = el.dataset.target;
     if (!tableById[tgt]) return;
-    el.addEventListener('click', () => openDetailPanel(tgt));
+    el.addEventListener('click', e => { e.stopPropagation(); openDetailPanel(tgt); });
     el.addEventListener('mouseenter', () => setHoveredNode(tgt, 'detail', id));
+    el.addEventListener('mouseleave', () => setHoveredNode(null));
+  });
+
+  // Grouped polymorphic rows: hover the row → highlight all (anchor → target_i) edges in orange.
+  body.querySelectorAll('[data-bundle-targets]').forEach(el => {
+    const targets = el.dataset.bundleTargets.split(',').filter(Boolean);
+    el.addEventListener('mouseenter', () => setHoveredNode(id, 'detail', targets));
     el.addEventListener('mouseleave', () => setHoveredNode(null));
   });
 
@@ -1161,6 +1376,7 @@ function highlightNode(id) {
 }
 
 function setHoveredNode(id, source, pairWith) {
+  // pairWith may be a string (single-leg orange overlay) or string[] (bundle).
   const svg = document.getElementById('diagram');
   // When clearing hover, fall back to the selected node so its neighbours stay emphasised.
   if (id == null && highlightedNode) {
@@ -1168,10 +1384,15 @@ function setHoveredNode(id, source, pairWith) {
     source = undefined;
     pairWith = undefined;
   }
-  const isPair = source === 'detail' && pairWith && id;
-  // In pair mode the base highlight follows the selected table (pairWith); `id` only marks the pair overlay.
-  const anchor = isPair ? pairWith : id;
-  const pairTarget = isPair ? id : null;
+  const isArrayPair = Array.isArray(pairWith);
+  const pairTargets = pairWith == null
+    ? []
+    : (isArrayPair ? pairWith : [pairWith]);
+  const isPair = source === 'detail' && pairTargets.length > 0 && id;
+  // For single (string pairWith): id=hovered target, pairWith=anchor.
+  // For bundle (array pairWith): id=anchor, pairWith=targets.
+  const anchor = isPair ? (isArrayPair ? id : pairWith) : id;
+  const pairSet = new Set(isPair ? (isArrayPair ? pairTargets : [id]) : []);
   document.body.classList.toggle('hovering-from-detail', isPair);
   if (anchor) {
     document.body.classList.add('hovering');
@@ -1179,17 +1400,21 @@ function setHoveredNode(id, source, pairWith) {
       const { from, to } = g.dataset;
       const touching = from === anchor || to === anchor;
       g.classList.toggle('is-touching', touching);
-      const pairEdge = isPair && ((from === anchor && to === pairTarget) || (from === pairTarget && to === anchor));
+      const pairEdge = isPair && (
+        (from === anchor && pairSet.has(to)) ||
+        (to === anchor && pairSet.has(from))
+      );
       g.classList.toggle('is-pair', pairEdge);
     });
     svg.querySelectorAll('.node').forEach(g => {
+      const nid = g.dataset.id;
       const touching =
-        g.dataset.id === anchor ||
+        nid === anchor ||
         Array.from(svg.querySelectorAll('.edge.is-touching')).some(
-          e => e.dataset.from === g.dataset.id || e.dataset.to === g.dataset.id
+          e => e.dataset.from === nid || e.dataset.to === nid
         );
       g.classList.toggle('is-touching-hover', touching);
-      g.classList.toggle('is-pair', isPair && g.dataset.id === pairTarget);
+      g.classList.toggle('is-pair', isPair && pairSet.has(nid));
     });
   } else {
     document.body.classList.remove('hovering');
