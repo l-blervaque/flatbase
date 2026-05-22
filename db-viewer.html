@@ -166,22 +166,31 @@
     body.hovering .edge.is-touching text { opacity: 1; }
     body.hovering .node:not(.is-touching-hover) rect { opacity: 0.45; }
 
+    /* Hover originating from the detail pane: overlay an orange emphasis on the specific link,
+       while the selected table's normal neighborhood highlight stays intact. */
+    body.hovering-from-detail .node.is-pair rect {
+      stroke: #f97316 !important;
+      stroke-width: 3;
+      filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.6));
+    }
+    body.hovering-from-detail .edge.is-pair path,
+    body.hovering-from-detail .edge.is-pair line {
+      stroke: #f97316 !important;
+      stroke-width: 3;
+      filter: drop-shadow(0 0 4px rgba(249, 115, 22, 0.55));
+    }
+
     #detail-panel {
-      position: fixed;
-      top: 0;
-      right: 0;
       width: 380px;
-      height: 100vh;
+      flex-shrink: 0;
       background: #fff;
-      box-shadow: -2px 0 10px rgba(0,0,0,0.1);
-      z-index: 100;
+      border-left: 1px solid #e0e0e0;
+      box-shadow: -2px 0 10px rgba(0,0,0,0.05);
       display: flex;
       flex-direction: column;
-      transform: translateX(0);
-      transition: transform 0.2s ease;
       overflow: hidden;
     }
-    #detail-panel.closed { transform: translateX(100%); }
+    #detail-panel.closed { display: none; }
     #detail-panel header {
       display: flex;
       align-items: center;
@@ -255,7 +264,15 @@
       font-weight: 600;
       color: #2d3748;
     }
-    .detail-relation .rel-target.clickable { cursor: pointer; color: #3182ce; text-decoration: underline; }
+    .detail-relation.navigable {
+      cursor: pointer;
+      transition: background 0.12s, border-left-color 0.12s;
+    }
+    .detail-relation.navigable .rel-target { color: #3182ce; }
+    .detail-relation.navigable:hover {
+      background: #fff7ed;
+      border-left-color: #f97316;
+    }
     .detail-relation .rel-label { color: #718096; font-style: italic; font-size: 11px; }
     .detail-notes {
       padding: 8px 10px;
@@ -295,7 +312,9 @@
       color: #4a5568;
     }
     .detail-columns .col-flag.pk { background: #fef3c7; color: #92400e; }
-    .detail-columns .col-flag.fk { background: #dbeafe; color: #1e40af; cursor: pointer; }
+    .detail-columns .col-flag.fk { background: #dbeafe; color: #1e40af; }
+    .detail-columns tr.navigable { cursor: pointer; transition: background 0.12s; }
+    .detail-columns tr.navigable:hover td { background: #fff7ed; }
     .detail-columns .col-flag.nn { background: #fed7d7; color: #742a2a; }
     .detail-columns .col-notes { color: #718096; font-style: italic; font-size: 11px; }
     #detail-hide-btn {
@@ -332,15 +351,14 @@
       <defs id="svg-defs"></defs>
     </svg>
   </div>
+  <aside id="detail-panel" class="closed">
+    <header>
+      <h2 id="detail-name-en"></h2>
+      <button id="detail-close" aria-label="Close">×</button>
+    </header>
+    <div id="detail-body"></div>
+  </aside>
 </div>
-
-<aside id="detail-panel" class="closed">
-  <header>
-    <h2 id="detail-name-en"></h2>
-    <button id="detail-close" aria-label="Close">×</button>
-  </header>
-  <div id="detail-body"></div>
-</aside>
 
 <script>
 let DATA = null;
@@ -862,11 +880,12 @@ function openDetailPanel(id) {
     const labelHtml = rel.label
       ? `<span class="rel-label">"${escapeHtml(rel.label)}"</span>`
       : '';
+    const navAttr = otherTable ? ` data-target="${escapeHtml(other)}"` : '';
     return `
-      <div class="detail-relation">
+      <div class="detail-relation${otherTable ? ' navigable' : ''}"${navAttr}>
         <span class="rel-type">${escapeHtml(rel.type)}</span>
         →
-        <span class="rel-target ${otherTable ? 'clickable' : ''}" data-target="${escapeHtml(other)}">
+        <span class="rel-target">
           ${escapeHtml(otherName)}
         </span>
         ${labelHtml}
@@ -906,13 +925,15 @@ function openDetailPanel(id) {
           <tbody>
             ${table.columns.map(col => {
               const c = typeof col === 'string' ? { name: col } : col;
+              const fkTarget = c.fk && (typeof c.fk === 'string' ? c.fk : c.fk.table);
               const flags = [];
               if (c.pk) flags.push('<span class="col-flag pk" title="primary key">PK</span>');
-              if (c.fk) flags.push(`<span class="col-flag fk" data-target="${escapeHtml(c.fk)}" title="references ${escapeHtml(c.fk)}">FK→${escapeHtml(c.fk)}</span>`);
+              if (fkTarget) flags.push(`<span class="col-flag fk" title="references ${escapeHtml(fkTarget)}">FK→${escapeHtml(fkTarget)}</span>`);
               if (c.nullable === false) flags.push('<span class="col-flag nn" title="NOT NULL">NN</span>');
               if (c.unique) flags.push('<span class="col-flag" title="unique">U</span>');
+              const navAttr = fkTarget && tableById[fkTarget] ? ` class="navigable" data-target="${escapeHtml(fkTarget)}"` : '';
               return `
-                <tr>
+                <tr${navAttr}>
                   <td class="col-name">${escapeHtml(c.name)}</td>
                   <td class="col-type">${escapeHtml(c.type || '')}</td>
                   <td class="col-flags">${flags.join('')}</td>
@@ -953,20 +974,14 @@ function openDetailPanel(id) {
     openDetailPanel(id); // re-render panel to flip button state
   });
 
-  // Make rel-target clickable to navigate
-  body.querySelectorAll('.rel-target.clickable').forEach(el => {
-    el.addEventListener('click', () => {
-      const tgt = el.dataset.target;
-      openDetailPanel(tgt);
-    });
-  });
-
-  // FK flags also navigate
-  body.querySelectorAll('.col-flag.fk').forEach(el => {
-    el.addEventListener('click', () => {
-      const tgt = el.dataset.target;
-      if (tableById[tgt]) openDetailPanel(tgt);
-    });
+  // Navigable rows (relation rows + column rows with an FK) drive navigation on click
+  // and preview the link in the diagram on hover over the whole row.
+  body.querySelectorAll('.navigable[data-target]').forEach(el => {
+    const tgt = el.dataset.target;
+    if (!tableById[tgt]) return;
+    el.addEventListener('click', () => openDetailPanel(tgt));
+    el.addEventListener('mouseenter', () => setHoveredNode(tgt, 'detail', id));
+    el.addEventListener('mouseleave', () => setHoveredNode(null));
   });
 
   // Scroll the diagram to bring the table into view (matches previous highlight behavior)
@@ -981,6 +996,7 @@ function openDetailPanel(id) {
   }
 
   render();
+  setHoveredNode(null); // re-applies focus emphasis to the newly selected node
 }
 
 function closeDetailPanel() {
@@ -988,6 +1004,7 @@ function closeDetailPanel() {
   openPanelId = null;
   highlightedNode = null;
   render();
+  setHoveredNode(null); // clears emphasis now that nothing is selected
 }
 
 function getNeighbors(id) {
@@ -1129,6 +1146,7 @@ function resetState() {
 function highlightNode(id) {
   highlightedNode = highlightedNode === id ? null : id;
   render();
+  setHoveredNode(null);
 
   if (highlightedNode) {
     const pos = positions[id];
@@ -1142,26 +1160,43 @@ function highlightNode(id) {
   }
 }
 
-function setHoveredNode(id) {
+function setHoveredNode(id, source, pairWith) {
   const svg = document.getElementById('diagram');
-  if (id) {
+  // When clearing hover, fall back to the selected node so its neighbours stay emphasised.
+  if (id == null && highlightedNode) {
+    id = highlightedNode;
+    source = undefined;
+    pairWith = undefined;
+  }
+  const isPair = source === 'detail' && pairWith && id;
+  // In pair mode the base highlight follows the selected table (pairWith); `id` only marks the pair overlay.
+  const anchor = isPair ? pairWith : id;
+  const pairTarget = isPair ? id : null;
+  document.body.classList.toggle('hovering-from-detail', isPair);
+  if (anchor) {
     document.body.classList.add('hovering');
     svg.querySelectorAll('.edge').forEach(g => {
-      const touching = g.dataset.from === id || g.dataset.to === id;
+      const { from, to } = g.dataset;
+      const touching = from === anchor || to === anchor;
       g.classList.toggle('is-touching', touching);
+      const pairEdge = isPair && ((from === anchor && to === pairTarget) || (from === pairTarget && to === anchor));
+      g.classList.toggle('is-pair', pairEdge);
     });
     svg.querySelectorAll('.node').forEach(g => {
       const touching =
-        g.dataset.id === id ||
+        g.dataset.id === anchor ||
         Array.from(svg.querySelectorAll('.edge.is-touching')).some(
           e => e.dataset.from === g.dataset.id || e.dataset.to === g.dataset.id
         );
       g.classList.toggle('is-touching-hover', touching);
+      g.classList.toggle('is-pair', isPair && g.dataset.id === pairTarget);
     });
   } else {
     document.body.classList.remove('hovering');
     svg.querySelectorAll('.edge.is-touching').forEach(g => g.classList.remove('is-touching'));
+    svg.querySelectorAll('.edge.is-pair').forEach(g => g.classList.remove('is-pair'));
     svg.querySelectorAll('.node.is-touching-hover').forEach(g => g.classList.remove('is-touching-hover'));
+    svg.querySelectorAll('.node.is-pair').forEach(g => g.classList.remove('is-pair'));
   }
 }
 
@@ -1502,15 +1537,14 @@ function buildFrozenHTML(data) {
       <defs id="svg-defs"></defs>
     </svg>
   </div>
-</div>
-
-<aside id="detail-panel" class="closed">
-  <header>
-    <h2 id="detail-name-en"></h2>
-    <button id="detail-close" aria-label="Close">×</button>
-  </header>
-  <div id="detail-body"></div>
-</aside>`;
+  <aside id="detail-panel" class="closed">
+    <header>
+      <h2 id="detail-name-en"></h2>
+      <button id="detail-close" aria-label="Close">×</button>
+    </header>
+    <div id="detail-body"></div>
+  </aside>
+</div>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
