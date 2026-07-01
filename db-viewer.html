@@ -639,6 +639,10 @@ function renderNodes() {
     rect.setAttribute('stroke', color);
     rect.setAttribute('stroke-width', isHighlighted ? 3 : 1.5);
     if (!t.modeled) rect.setAttribute('stroke-dasharray', '5,3');
+    if (t.proposed) {
+      rect.setAttribute('stroke', '#8b5cf6');          // violet, overrides domain color
+      rect.setAttribute('stroke-dasharray', '5,3');
+    }
     g.appendChild(rect);
 
     const textEN = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -686,6 +690,15 @@ function renderNodes() {
       nm.setAttribute('fill', '#c53030');
       nm.textContent = 'planned';
       g.appendChild(nm);
+    }
+    if (t.proposed) {
+      const pl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      pl.setAttribute('x', pos.x + 8);
+      pl.setAttribute('y', pos.y + 58);
+      pl.setAttribute('font-size', '9');
+      pl.setAttribute('fill', '#5b21b6');
+      pl.textContent = 'proposed';
+      g.appendChild(pl);
     }
 
     g.addEventListener('click', () => openDetailPanel(t.id));
@@ -1141,6 +1154,7 @@ function openDetailPanel(id) {
               if (fkTarget) flags.push(`<span class="col-flag fk" title="references ${escapeHtml(fkTarget)}">FK→${escapeHtml(fkTarget)}</span>`);
               if (c.nullable === false) flags.push('<span class="col-flag nn" title="NOT NULL">NN</span>');
               if (c.unique) flags.push('<span class="col-flag" title="unique">U</span>');
+              if (c.proposed) flags.push('<span class="col-flag proposed">proposed</span>');
               const navAttr = fkTarget && tableById[fkTarget] ? ` class="navigable" data-target="${escapeHtml(fkTarget)}"` : '';
               return `
                 <tr${navAttr}>
@@ -1294,6 +1308,7 @@ function renderSidebar() {
           <div class="table-badges">
             <span class="badge">${t.type}</span>
             ${!t.modeled ? '<span class="badge not-modeled">planned</span>' : ''}
+            ${t.proposed ? '<span class="badge proposed">proposed</span>' : ''}
           </div>
         </div>
       `;
