@@ -383,6 +383,11 @@
 <header id="header">
   <span class="app-title">flatbase <small>v0.5</small></span>
   <div id="domain-filters"></div>
+  <select id="proposed-filter" title="Filter by proposed/defined">
+    <option value="all">Show: All</option>
+    <option value="proposed">Proposed only</option>
+    <option value="defined">Defined only</option>
+  </select>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
@@ -417,7 +422,14 @@ const PAD = 50;
 let hiddenNodes = new Set();
 let cascadeHiddenNodes = new Set();
 let hiddenDomains = new Set();
+let proposedFilter = 'all';
 let highlightedNode = null;
+
+function matchesProposedFilter(t) {
+  if (proposedFilter === 'proposed') return !!t.proposed;
+  if (proposedFilter === 'defined')  return !t.proposed;
+  return true;
+}
 let positions = {}; // { [id]: { x, y } }
 
 function computePositions() {
@@ -961,7 +973,7 @@ function renderEdges(visibleIds) {
 
 function getVisibleIds() {
   return DATA.tables
-    .filter(t => !hiddenDomains.has(t.domain) && !hiddenNodes.has(t.id) && !cascadeHiddenNodes.has(t.id))
+    .filter(t => !hiddenDomains.has(t.domain) && !hiddenNodes.has(t.id) && !cascadeHiddenNodes.has(t.id) && matchesProposedFilter(t))
     .map(t => t.id);
 }
 
@@ -1286,6 +1298,7 @@ function renderSidebar() {
     nav.appendChild(domainEl);
 
     for (const t of tables) {
+      if (!matchesProposedFilter(t)) continue;
       const row = document.createElement('div');
       row.className = 'sidebar-table';
       row.dataset.id = t.id;
@@ -1370,6 +1383,9 @@ function resetState() {
   hiddenNodes.clear();
   cascadeHiddenNodes.clear();
   hiddenDomains.clear();
+  proposedFilter = 'all';
+  const filterEl = document.getElementById('proposed-filter');
+  if (filterEl) filterEl.value = 'all';
   highlightedNode = null;
   closeDetailPanel();
   render();
@@ -1767,6 +1783,11 @@ function buildFrozenHTML(data) {
 <header id="header">
   <span class="app-title">flatbase <small>v0.5</small></span>
   <div id="domain-filters"></div>
+  <select id="proposed-filter" title="Filter by proposed/defined">
+    <option value="all">Show: All</option>
+    <option value="proposed">Proposed only</option>
+    <option value="defined">Defined only</option>
+  </select>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
@@ -1849,6 +1870,10 @@ async function init() {
   render();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
+  document.getElementById('proposed-filter').addEventListener('change', (e) => {
+    proposedFilter = e.target.value;
+    render();
+  });
   document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
   const reloadBtn = document.getElementById('reload-data-btn');
   if (window.__BAKED_DATA__) {
