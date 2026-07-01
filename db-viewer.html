@@ -626,7 +626,7 @@ function renderNodes() {
     if (!pos) continue;
 
     const color = DOMAIN_COLORS[t.domain] || '#999';
-    const isHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id) || hiddenDomains.has(t.domain);
+    const isHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id) || hiddenDomains.has(t.domain) || !matchesProposedFilter(t);
     const isHighlighted = highlightedNode === t.id;
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -1287,6 +1287,9 @@ function renderSidebar() {
     if (!tables.length) continue;
 
     const color = DOMAIN_COLORS[domain] || '#999';
+
+    const anyVisible = tables.some(matchesProposedFilter);
+    if (!anyVisible) continue;
 
     const domainEl = document.createElement('div');
     domainEl.className = 'sidebar-domain';
