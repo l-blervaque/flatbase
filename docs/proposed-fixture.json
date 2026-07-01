@@ -1,0 +1,15 @@
+{
+  "meta": { "project": "proposed-fixture" },
+  "domains": [{ "id": "d", "color": "#4E79A7" }],
+  "tables": [
+    { "id": "existing_tbl", "name": "Existing", "domain": "d", "type": "entity",
+      "status": "complete",
+      "columns": [
+        { "name": "id", "type": "bigint", "pk": true },
+        { "name": "new_col", "type": "text", "proposed": true }
+      ] },
+    { "id": "proposed_tbl", "name": "Proposed", "domain": "d", "type": "entity",
+      "status": "skeleton", "proposed": true,
+      "columns": [{ "name": "id", "type": "bigint", "pk": true, "proposed": true }] }
+  ]
+}

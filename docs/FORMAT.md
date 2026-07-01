@@ -76,6 +76,17 @@ generate new tables that the viewer can render.
 
 If both are present, `status` wins.
 
+## `proposed` marker
+
+An orthogonal boolean `proposed: true` may appear on any element (table, column,
+relation, enum). It marks a **suggested, not-yet-defined** element (e.g. from an
+automated schema proposer) awaiting human arbitration — distinct from `status`
+(which describes how *modeled* a defined element is). Elements without the key are
+treated as defined. The viewer renders proposed elements distinctly (a violet
+"proposed" badge/flag and a dashed violet node border) and offers a header filter
+to show All / Proposed only / Defined only. Removing every `proposed` key renders
+the schema exactly as if the marker never existed.
+
 ---
 
 ## Column object
