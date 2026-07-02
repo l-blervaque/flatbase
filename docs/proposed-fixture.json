@@ -1,15 +1,38 @@
 {
   "meta": { "project": "proposed-fixture" },
   "domains": [{ "id": "d", "color": "#4E79A7" }],
+  "enums": [
+    { "id": "sample_status", "proposed": true, "_home": "existing_tbl",
+      "_evidence": "prose: 'status is either draft or final'", "_provenance": "design",
+      "values": [
+        { "code": "draft", "label": "Draft" },
+        { "code": "final", "label": "Final" }
+      ] }
+  ],
   "tables": [
     { "id": "existing_tbl", "name": "Existing", "domain": "d", "type": "entity",
       "status": "complete",
       "columns": [
         { "name": "id", "type": "bigint", "pk": true },
-        { "name": "new_col", "type": "text", "proposed": true }
+        { "name": "new_col", "type": "text", "proposed": true,
+          "_evidence": "M21-024", "_provenance": "design" },
+        { "name": "status", "type": "enum", "enum_ref": "sample_status", "proposed": true,
+          "_evidence": "prose: 'status is either draft or final'" },
+        { "name": "other_tbl_id", "type": "bigint", "fk": "other_tbl", "proposed": true,
+          "_evidence": "M21-031" }
+      ] },
+    { "id": "other_tbl", "name": "Other", "domain": "d", "type": "entity",
+      "status": "complete",
+      "columns": [
+        { "name": "id", "type": "bigint", "pk": true }
       ] },
     { "id": "proposed_tbl", "name": "Proposed", "domain": "d", "type": "entity",
       "status": "skeleton", "proposed": true,
-      "columns": [{ "name": "id", "type": "bigint", "pk": true, "proposed": true }] }
+      "_evidence": "M21-024", "_provenance": "design",
+      "columns": [
+        { "name": "id", "type": "bigint", "pk": true, "proposed": true },
+        { "name": "existing_tbl_id", "type": "bigint", "fk": "existing_tbl", "proposed": true,
+          "_evidence": "M21-024" }
+      ] }
   ]
 }

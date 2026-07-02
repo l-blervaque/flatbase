@@ -21,7 +21,7 @@ Both normalize to the same internal shape. `docs/FORMAT.md` is the reference doc
 
 **Two runtime modes:**
 - **Atelier** (default) — open `db-viewer.html` directly; the picker prompts for a file/folder, the normalized result is cached in `localStorage`, and `↻ Data` clears it.
-- **Frozen** — when `window.__BAKED_DATA__` is set before the main script runs, `loadData()` returns it directly. The `↻ Data` button is hidden. This is the runtime the `↓ Export` button produces: a self-contained HTML with the schema inlined, shareable anywhere (file://, GitHub Pages, etc.), locked to that schema.
+- **Frozen** — when `window.__BAKED_DATA__` is set before the main script runs, `loadData()` normalizes it and returns it. The `↻ Data` button is hidden. This is the runtime the `↓ Export` button produces: a self-contained HTML with the schema inlined, shareable anywhere (file://, GitHub Pages, etc.), locked to that schema. The export bakes the **pristine** input (`RAW_INPUT`, pre-normalize) and re-normalizes at load, so the `↓ Proposal` export round-trips cleanly from frozen viewers too.
 
 **HARD RULE:** flatbase is HTML + JSON, zero external dependencies. Never rename `tables.json` to `.js` or wrap it in a JS assignment to dodge `file://` CORS — the JSON file stays a JSON file.
 
@@ -36,6 +36,8 @@ Inside the HTML:
   - `hiddenNodes: Set<id>`
   - `hiddenDomains: Set<domain>`
   - `highlightedNode: id | null`
+  - `proposedFilter: 'all' | 'proposed' | 'defined'`
+  - Exception: `arbitration` (proposal-mode decisions) is the one deliberately *persisted* state — `localStorage` key `flatbase.arbitration.<meta.project>`, cleared by `↻ Data`.
 - **Interactions**:
   - Domain checkbox → toggles all tables in that domain + their edges.
   - Node click → hides node, then cascade-hides any node no longer connected to the main component.
@@ -61,7 +63,7 @@ Then open `db-viewer.html` in a browser. Edit the HTML or `tables.json`, reload.
 - **Schema shape** — see `docs/FORMAT.md`. Quick summary: `{ meta, domains?: [{id, color}], enums?, tables: [{id, name, name_ja?, domain, type, status? | modeled?, notes?, columns?: [...], relations?: [...] }] }`. `domains` is optional (auto-derived from tables in insertion order + default palette). `relations` is optional — derived from `columns[].fk` and `columns[].polymorphic` when omitted.
 - **Relation types**: `belongs_to`, `has_one`, `has_many`, `many_to_many`, `extends`, `polymorphic` (uses `targets: [...]` instead of `target`; `"*"` means all tables).
 - **Columns** (optional, per table) — rendered in the detail panel when present. Each entry is either a plain string (just the name) or an object: `{ name, type?, nullable?, pk?, fk?, unique?, enum_ref?, polymorphic?, notes? }`. `fk` is either a string (`"other_table_id"`) or an object (`{ table, column?, on_delete? }`); both produce a clickable badge that navigates to the target table.
-- **Out of scope** for the viewer (per design spec): zoom/pan, drag-to-reposition, persistence, editing the data, filtering by type/modeled. Push back if asked to add these without context.
+- **Out of scope** for the viewer (per design spec): zoom/pan, drag-to-reposition, persistence, editing the data, filtering by type/modeled. Push back if asked to add these without context. **Exception — proposal-arbitration mode**: the proposed filter, per-element arbitration (ignore / type overrule) and its localStorage persistence are in scope by design (see `docs/FORMAT.md` § Arbitration).
 - **No literal `</script>` in the viewer's script body.** The whole viewer lives inside one inline `<script>` tag, so the HTML parser is in script-data state while scanning it. Any literal `<` + `/script>` byte sequence — even inside a JS comment or a template literal — ends the script tag prematurely and breaks the source viewer. Regex literals like `/<\/script>/gi` are safe (the `\` between `<` and `/` prevents the match). When the output of `buildFrozenHTML` needs to embed real closing-script tags, build them at runtime via `const SC = '</' + 'script>'` and interpolate `${SC}` into the template.
 
 ## Reference docs
@@ -71,3 +73,4 @@ Then open `db-viewer.html` in a browser. Edit the HTML or `tables.json`, reload.
 - `docs/superpowers/plans/2026-05-12-db-viewer.md` — implementation plan that built the current viewer.
 - `docs/superpowers/specs/2026-05-21-export-frozen-html-design.md` — design spec for the ↓ Export / frozen-HTML feature.
 - `docs/superpowers/plans/2026-05-21-export-frozen-html.md` — implementation plan for the same.
+- `docs/proposed-fixture.json` — minimal fixture exercising the `proposed` marker, `_evidence`/`_provenance`/`_home` metadata, proposed FK edges, and a proposed enum.

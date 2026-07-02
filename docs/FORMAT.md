@@ -83,9 +83,47 @@ relation, enum). It marks a **suggested, not-yet-defined** element (e.g. from an
 automated schema proposer) awaiting human arbitration — distinct from `status`
 (which describes how *modeled* a defined element is). Elements without the key are
 treated as defined. The viewer renders proposed elements distinctly (a violet
-"proposed" badge/flag and a dashed violet node border) and offers a header filter
-to show All / Proposed only / Defined only. Removing every `proposed` key renders
-the schema exactly as if the marker never existed.
+"proposed" badge/flag, a dashed violet node border, and violet dashed edges) and
+offers a header filter to show All / Proposed only / Defined only. Removing every
+`proposed` key renders the schema exactly as if the marker never existed.
+
+Notes on derived edges and the filter:
+
+- A **proposed FK column** makes its derived edge render as proposed (violet,
+  dashed). Ignoring that column in arbitration removes the edge from view and
+  from the export.
+- The header filter is **table-level**: a proposed FK edge between two *defined*
+  tables stays visible under "Defined only" because both endpoints are visible.
+
+### Proposal metadata passthrough
+
+A proposal produced by an automated proposer (e.g. `lattice-propose-schema`) may
+carry extra metadata on proposed elements. The viewer displays these and the
+arbitrated export preserves them verbatim:
+
+| Key           | On                | Meaning                                          |
+|---------------|-------------------|--------------------------------------------------|
+| `_evidence`   | any proposed elem | an atom-id (e.g. `M21-024`) or a prose snippet    |
+| `_provenance` | any proposed elem | epistemic provenance, defaults to `design`        |
+| `_home`       | proposed enums    | id of the entity/table that owns the enum         |
+
+### Arbitration
+
+When a loaded schema contains any `proposed` element, the viewer enters proposal
+mode (a `↓ Proposal` button appears). The operator arbitrates:
+
+- **per proposed column** — *ignore* (drop) or *overrule* (edit the type);
+- **per proposed table** — *ignore* (drops the table, its columns, and its edges);
+- **per proposed enum** — *ignore* (shown in the detail panel of the owning table,
+  via `_home` or a referencing `enum_ref` column).
+
+Decisions persist in `localStorage` under `flatbase.arbitration.<meta.project>`
+and are cleared by `↻ Data`. Ignored elements stay rendered (dimmed / struck
+through) so decisions are revertible; only the export drops them. `↓ Proposal`
+downloads `proposal.arbitrated.json`: kept + overruled elements (still carrying
+`proposed: true` and the `_` metadata), ignored elements removed, proposed FK
+columns whose target table was ignored removed as well — valid input for
+`apply-proposal.py`. Baseline (non-proposed) elements are never modified.
 
 ---
 
