@@ -360,6 +360,13 @@
     .detail-columns tr.navigable:hover td { background: #fff7ed; }
     .detail-columns .col-flag.nn { background: #fed7d7; color: #742a2a; }
     .detail-columns .col-flag.proposed { background: #ede9fe; color: #5b21b6; }
+    .detail-columns tr.arb-ignored td { opacity: 0.4; text-decoration: line-through; }
+    .arb-btn { font-size: 9px; padding: 1px 5px; margin-left: 3px; border: none;
+      border-radius: 3px; cursor: pointer; background: #e2e8f0; color: #4a5568; }
+    .arb-btn:hover { background: #cbd5e0; }
+    .arb-btn.on { background: #ede9fe; color: #5b21b6; font-weight: 600; }
+    #export-proposal-btn { background: #6d28d9; color: #fff; }
+    #export-proposal-btn:hover { background: #5b21b6; }
     .detail-columns .col-notes { color: #718096; font-style: italic; font-size: 11px; }
     #detail-hide-btn {
       margin-top: 12px;
@@ -391,6 +398,7 @@
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
 </header>
 
 <div id="main">
@@ -429,6 +437,46 @@ function matchesProposedFilter(t) {
   if (proposedFilter === 'proposed') return !!t.proposed;
   if (proposedFilter === 'defined')  return !t.proposed;
   return true;
+}
+
+// --- Proposal arbitration (Sub-spec 2) ---
+// A proposal.json is a flatbase schema carrying `proposed:true` elements. The operator
+// arbitrates per proposed column: ignore (drop) or overrule (edit type). Decisions persist
+// in localStorage keyed by project. Export writes the arbitrated proposal.json (kept +
+// overruled, ignored removed) for tools/apply-proposal.py.
+let RAW_INPUT = null;            // pristine loaded schema (pre-normalize), source for export
+let arbitration = {};           // `${tableId}::${colName}` -> { ignore?:true, type?:string }
+function arbKey() { return 'flatbase.arbitration.' + ((DATA.meta && DATA.meta.project) || 'default'); }
+function loadArbitration() {
+  try { arbitration = JSON.parse(localStorage.getItem(arbKey())) || {}; }
+  catch { arbitration = {}; }
+}
+function saveArbitration() {
+  try { localStorage.setItem(arbKey(), JSON.stringify(arbitration)); } catch {}
+}
+function exportProposal() {
+  if (!RAW_INPUT) return;
+  const out = JSON.parse(JSON.stringify(RAW_INPUT));
+  let kept = 0, ignored = 0, overruled = 0;
+  for (const t of (out.tables || [])) {
+    if (!Array.isArray(t.columns)) continue;
+    t.columns = t.columns.filter(col => {
+      const c = typeof col === 'string' ? { name: col } : col;
+      const arb = arbitration[t.id + '::' + c.name];
+      if (arb && arb.ignore) { if (c.proposed) ignored++; return false; }
+      if (arb && arb.type && typeof col === 'object') { col.type = arb.type; if (c.proposed) overruled++; }
+      if (c.proposed) kept++;
+      return true;
+    });
+  }
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'proposal.arbitrated.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  alert('Arbitrated proposal exported: ' + kept + ' proposed kept (' + overruled +
+        ' overruled), ' + ignored + ' ignored.\nFeed it to tools/apply-proposal.py.');
 }
 let positions = {}; // { [id]: { x, y } }
 
@@ -1161,17 +1209,27 @@ function openDetailPanel(id) {
             ${table.columns.map(col => {
               const c = typeof col === 'string' ? { name: col } : col;
               const fkTarget = c.fk && (typeof c.fk === 'string' ? c.fk : c.fk.table);
+              const arb = arbitration[id + '::' + c.name] || {};
+              const effType = (arb.type != null ? arb.type : (c.type || ''));
               const flags = [];
               if (c.pk) flags.push('<span class="col-flag pk" title="primary key">PK</span>');
               if (fkTarget) flags.push(`<span class="col-flag fk" title="references ${escapeHtml(fkTarget)}">FK→${escapeHtml(fkTarget)}</span>`);
               if (c.nullable === false) flags.push('<span class="col-flag nn" title="NOT NULL">NN</span>');
               if (c.unique) flags.push('<span class="col-flag" title="unique">U</span>');
               if (c.proposed) flags.push('<span class="col-flag proposed">proposed</span>');
-              const navAttr = fkTarget && tableById[fkTarget] ? ` class="navigable" data-target="${escapeHtml(fkTarget)}"` : '';
+              if (c.proposed) {
+                flags.push(`<button class="arb-btn${arb.ignore ? ' on' : ''}" data-arb="ignore" data-col="${escapeHtml(c.name)}">ignore</button>`);
+                flags.push(`<button class="arb-btn${arb.type != null ? ' on' : ''}" data-arb="overrule" data-col="${escapeHtml(c.name)}">overrule</button>`);
+              }
+              const rowCls = [];
+              if (fkTarget && tableById[fkTarget]) rowCls.push('navigable');
+              if (arb.ignore) rowCls.push('arb-ignored');
+              const clsAttr = rowCls.length ? ` class="${rowCls.join(' ')}"` : '';
+              const tgtAttr = fkTarget && tableById[fkTarget] ? ` data-target="${escapeHtml(fkTarget)}"` : '';
               return `
-                <tr${navAttr}>
+                <tr${clsAttr}${tgtAttr}>
                   <td class="col-name">${escapeHtml(c.name)}</td>
-                  <td class="col-type">${escapeHtml(c.type || '')}</td>
+                  <td class="col-type">${escapeHtml(effType)}</td>
                   <td class="col-flags">${flags.join('')}</td>
                 </tr>
                 ${c.notes ? `<tr><td colspan="3" class="col-notes">${escapeHtml(c.notes)}</td></tr>` : ''}
@@ -1194,6 +1252,23 @@ function openDetailPanel(id) {
 
     <button id="detail-hide-btn"></button>
   `;
+
+  // Wire per-column arbitration controls (proposal mode): ignore / overrule.
+  body.querySelectorAll('.arb-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();                       // don't trigger row navigation
+    const col = btn.dataset.col, k = id + '::' + col;
+    const cur = arbitration[k] || {};
+    if (btn.dataset.arb === 'ignore') {
+      cur.ignore = !cur.ignore;
+    } else {
+      const nt = prompt('Overrule "' + col + '" type (blank = keep original):', cur.type != null ? cur.type : '');
+      if (nt === null) return;                 // cancelled
+      if (nt.trim()) cur.type = nt.trim(); else delete cur.type;
+    }
+    if (!cur.ignore && cur.type == null) delete arbitration[k]; else arbitration[k] = cur;
+    saveArbitration();
+    openDetailPanel(id);                        // refresh the panel
+  }));
 
   // Wire the hide button — text reflects current state
   const hideBtn = document.getElementById('detail-hide-btn');
@@ -1483,6 +1558,13 @@ function normalizeData(data) {
   if (!data || !Array.isArray(data.tables)) {
     throw new Error('missing "tables" array');
   }
+
+  // Snapshot the pristine input BEFORE mutation (source for the arbitrated export), and
+  // detect proposal mode = any element carries `proposed: true`.
+  RAW_INPUT = JSON.parse(JSON.stringify(data));
+  data.__hasProposed = data.tables.some(t =>
+      t.proposed || (Array.isArray(t.columns) && t.columns.some(c => typeof c === 'object' && c.proposed)))
+    || (Array.isArray(data.enums) && data.enums.some(e => e.proposed));
 
   if (!Array.isArray(data.domains) || data.domains.length === 0) {
     data.domains = deriveDomains(data.tables);
@@ -1794,6 +1876,7 @@ function buildFrozenHTML(data) {
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
 </header>
 
 <div id="main">
@@ -1878,6 +1961,11 @@ async function init() {
     render();
   });
   document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
+  document.getElementById('export-proposal-btn').addEventListener('click', exportProposal);
+  if (DATA.__hasProposed) {
+    loadArbitration();
+    document.getElementById('export-proposal-btn').style.display = '';
+  }
   const reloadBtn = document.getElementById('reload-data-btn');
   if (window.__BAKED_DATA__) {
     reloadBtn.style.display = 'none';
