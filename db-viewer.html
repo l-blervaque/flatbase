@@ -462,9 +462,10 @@ function exportProposal() {
     if (!Array.isArray(t.columns)) continue;
     t.columns = t.columns.filter(col => {
       const c = typeof col === 'string' ? { name: col } : col;
-      const arb = arbitration[t.id + '::' + c.name];
-      if (arb && arb.ignore) { if (c.proposed) ignored++; return false; }
-      if (arb && arb.type && typeof col === 'object') { col.type = arb.type; if (c.proposed) overruled++; }
+      // Only PROPOSED columns are arbitrable; a stale key must never touch a baseline column.
+      const arb = c.proposed ? arbitration[t.id + '::' + c.name] : null;
+      if (arb && arb.ignore) { ignored++; return false; }
+      if (arb && arb.type && typeof col === 'object') { col.type = arb.type; overruled++; }
       if (c.proposed) kept++;
       return true;
     });
@@ -473,7 +474,9 @@ function exportProposal() {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'proposal.arbitrated.json';
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
   alert('Arbitrated proposal exported: ' + kept + ' proposed kept (' + overruled +
         ' overruled), ' + ignored + ' ignored.\nFeed it to tools/apply-proposal.py.');
@@ -1802,7 +1805,10 @@ function pickFile() {
     const acceptRaw = (raw) => {
       try {
         const data = normalizeData(raw);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        // Cache the PRISTINE input (normalizeData snapshots it into RAW_INPUT before it
+        // mutates in place), so a later reload re-snapshots pristine data — the arbitrated
+        // export must not carry normalize-injected fields (modeled/relations/fk_ref…).
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(RAW_INPUT));
         overlay.remove();
         resolve(data);
       } catch (e) { setError('Invalid schema: ' + e.message); }
