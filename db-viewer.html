@@ -135,6 +135,9 @@
       color: #374151;
     }
     .badge.not-modeled { background: #fde8e8; color: #c53030; }
+    .badge.proposed { background: #ede9fe; color: #5b21b6; }
+    .node.arb-ignored { opacity: 0.35; }
+    .sidebar-table.arb-ignored .table-name-en { text-decoration: line-through; opacity: 0.5; }
 
     #diagram-wrap {
       flex: 1;
@@ -358,7 +361,20 @@
     .detail-columns tr.navigable { cursor: pointer; transition: background 0.12s; }
     .detail-columns tr.navigable:hover td { background: #fff7ed; }
     .detail-columns .col-flag.nn { background: #fed7d7; color: #742a2a; }
+    .detail-columns .col-flag.proposed { background: #ede9fe; color: #5b21b6; }
+    .detail-columns tr.arb-ignored td { opacity: 0.4; text-decoration: line-through; }
+    .arb-btn { font-size: 9px; padding: 1px 5px; margin-left: 3px; border: none;
+      border-radius: 3px; cursor: pointer; background: #e2e8f0; color: #4a5568; }
+    .arb-btn:hover { background: #cbd5e0; }
+    .arb-btn.on { background: #ede9fe; color: #5b21b6; font-weight: 600; }
+    #export-proposal-btn { background: #6d28d9; color: #fff; }
+    #export-proposal-btn:hover { background: #5b21b6; }
     .detail-columns .col-notes { color: #718096; font-style: italic; font-size: 11px; }
+    .detail-columns .col-evidence, .detail-evidence { color: #6d28d9; font-style: italic; font-size: 11px; }
+    .detail-columns .col-flag.inferred { background: #f1f5f9; color: #94a3b8; font-style: italic; }
+    .detail-columns .col-flag.enum-gap { background: #fde8e8; color: #c53030; }
+    .detail-columns tr.col-inferred .col-name { font-style: italic; color: #718096; }
+    .detail-arb-note { color: #6d28d9; font-size: 11px; font-weight: 600; margin-top: 4px; }
     #detail-hide-btn {
       margin-top: 12px;
       width: 100%;
@@ -381,9 +397,15 @@
 <header id="header">
   <span class="app-title">flatbase <small>v0.5</small></span>
   <div id="domain-filters"></div>
+  <select id="proposed-filter" title="Filter by proposed/defined">
+    <option value="all">Show: All</option>
+    <option value="proposed">Proposed only</option>
+    <option value="defined">Defined only</option>
+  </select>
   <button id="reset-btn">Reset</button>
-  <button id="reload-data-btn" title="Load a different tables.json">↻ Data</button>
+  <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
 </header>
 
 <div id="main">
@@ -415,7 +437,111 @@ const PAD = 50;
 let hiddenNodes = new Set();
 let cascadeHiddenNodes = new Set();
 let hiddenDomains = new Set();
+let proposedFilter = 'all';
 let highlightedNode = null;
+
+function matchesProposedFilter(t) {
+  if (proposedFilter === 'proposed') return !!t.proposed;
+  if (proposedFilter === 'defined')  return !t.proposed;
+  return true;
+}
+
+// --- Proposal arbitration (Sub-spec 2) ---
+// A proposal.json is a flatbase schema carrying `proposed:true` elements. The operator
+// arbitrates per proposed element. Decisions persist in localStorage keyed by project.
+// Export writes the arbitrated proposal.json (kept + overruled, ignored removed) for
+// tools/apply-proposal.py. Arbitration keys:
+//   `${tableId}::${colName}` -> { ignore?:true, type?:string }   (per proposed column)
+//   `table::${tableId}`      -> { ignore?:true }                 (whole proposed table)
+//   `enum::${enumId}`        -> { ignore?:true }                 (proposed enum)
+// A table literally named "table" or "enum" would collide with the namespaced kinds;
+// theoretical, accepted.
+let RAW_INPUT = null;            // pristine loaded schema (pre-normalize), source for export
+let arbitration = {};
+function arbKey() { return 'flatbase.arbitration.' + ((DATA.meta && DATA.meta.project) || 'default'); }
+function colArb(tid, name) { return arbitration[tid + '::' + name] || {}; }
+function tableArb(tid)     { return arbitration['table::' + tid] || {}; }
+function enumArb(eid)      { return arbitration['enum::' + eid] || {}; }
+function setArb(key, mutator) {
+  const entry = arbitration[key] || {};
+  mutator(entry);
+  if (Object.keys(entry).length) arbitration[key] = entry;
+  else delete arbitration[key];
+  saveArbitration();
+}
+function loadArbitration() {
+  try { arbitration = JSON.parse(localStorage.getItem(arbKey())) || {}; }
+  catch { arbitration = {}; }
+}
+function saveArbitration() {
+  try { localStorage.setItem(arbKey(), JSON.stringify(arbitration)); } catch {}
+}
+function exportProposal() {
+  if (!RAW_INPUT) return;
+  const out = JSON.parse(JSON.stringify(RAW_INPUT));
+  let keptTables = 0, ignoredTables = 0;
+  let kept = 0, ignored = 0, overruled = 0, droppedFks = 0;
+  let keptEnums = 0, ignoredEnums = 0;
+
+  // 1. Whole-table arbitration — only PROPOSED tables are droppable.
+  const droppedIds = new Set();
+  out.tables = (out.tables || []).filter(t => {
+    if (!t.proposed) return true;
+    if (tableArb(t.id).ignore) { ignoredTables++; droppedIds.add(t.id); return false; }
+    keptTables++;
+    return true;
+  });
+
+  // 2. Column arbitration + dangling-FK hygiene.
+  for (const t of out.tables) {
+    if (!Array.isArray(t.columns)) continue;
+    t.columns = t.columns.map(col => {
+      const c = typeof col === 'string' ? { name: col } : col;
+      // Only PROPOSED columns are arbitrable; a stale key must never touch a baseline column.
+      const arb = c.proposed ? colArb(t.id, c.name) : null;
+      if (arb && arb.type != null && !arb.ignore) {
+        overruled++;
+        if (typeof col === 'string') return { name: col, type: arb.type };
+        col.type = arb.type;
+      }
+      return col;
+    }).filter(col => {
+      const c = typeof col === 'string' ? { name: col } : col;
+      if (!c.proposed) return true;
+      if (colArb(t.id, c.name).ignore) { ignored++; return false; }
+      // A proposed FK whose target table was dropped would break apply-proposal.
+      const fkTarget = c.fk && (typeof c.fk === 'string' ? c.fk : c.fk.table);
+      if (fkTarget && droppedIds.has(fkTarget)) { droppedFks++; return false; }
+      kept++;
+      return true;
+    });
+  }
+
+  // 3. Enum arbitration — only PROPOSED enums are droppable.
+  if (Array.isArray(out.enums)) {
+    out.enums = out.enums.filter(e => {
+      if (!e.proposed) return true;
+      if (enumArb(e.id).ignore) { ignoredEnums++; return false; }
+      keptEnums++;
+      return true;
+    });
+  }
+
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'proposal.arbitrated.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+  alert('Arbitrated proposal exported.\n' +
+        'Tables: ' + keptTables + ' proposed kept, ' + ignoredTables + ' ignored.\n' +
+        'Columns: ' + kept + ' proposed kept (' + overruled + ' overruled), ' + ignored + ' ignored' +
+        (droppedFks ? ', ' + droppedFks + ' dropped (FK target ignored)' : '') + '.\n' +
+        'Enums: ' + keptEnums + ' proposed kept, ' + ignoredEnums + ' ignored.\n' +
+        'Feed it to tools/apply-proposal.py.');
+}
 let positions = {}; // { [id]: { x, y } }
 
 function computePositions() {
@@ -612,13 +738,16 @@ function renderNodes() {
     if (!pos) continue;
 
     const color = DOMAIN_COLORS[t.domain] || '#999';
-    const isHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id) || hiddenDomains.has(t.domain);
+    const isHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id) || hiddenDomains.has(t.domain) || !matchesProposedFilter(t);
     const isHighlighted = highlightedNode === t.id;
+
+    const isArbIgnored = !!(t.proposed && tableArb(t.id).ignore);
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.classList.add('node');
     if (isHidden) g.classList.add('hidden');
     if (isHighlighted) g.classList.add('highlighted');
+    if (isArbIgnored) g.classList.add('arb-ignored');
     g.dataset.id = t.id;
 
     if (t.notes) {
@@ -637,6 +766,10 @@ function renderNodes() {
     rect.setAttribute('stroke', color);
     rect.setAttribute('stroke-width', isHighlighted ? 3 : 1.5);
     if (!t.modeled) rect.setAttribute('stroke-dasharray', '5,3');
+    if (t.proposed) {
+      rect.setAttribute('stroke', '#8b5cf6');          // violet, overrides domain color
+      rect.setAttribute('stroke-dasharray', '5,3');
+    }
     g.appendChild(rect);
 
     const textEN = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -684,6 +817,16 @@ function renderNodes() {
       nm.setAttribute('fill', '#c53030');
       nm.textContent = 'planned';
       g.appendChild(nm);
+    }
+    if (t.proposed) {
+      const pl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      // Right of the type badge (x+10..x+80), left of the end-anchored "planned" label.
+      pl.setAttribute('x', pos.x + 86);
+      pl.setAttribute('y', pos.y + 58);
+      pl.setAttribute('font-size', '9');
+      pl.setAttribute('fill', '#5b21b6');
+      pl.textContent = isArbIgnored ? 'ignored' : 'proposed';
+      g.appendChild(pl);
     }
 
     g.addEventListener('click', () => openDetailPanel(t.id));
@@ -826,6 +969,9 @@ function collectEdges() {
           to: target,
           type: rel.type,
           label: rel.label || rel.type,
+          proposed: !!rel.proposed,
+          via: rel.via,
+          viaTable: rel.viaTable,
         });
       }
     }
@@ -843,6 +989,12 @@ function renderEdges(visibleIds) {
   for (const edge of edges) {
     if (!positions[edge.from] || !positions[edge.to]) continue;
     const bothVisible = visible.has(edge.from) && visible.has(edge.to);
+    // An edge is dropped from view when its carrying FK column is arb-ignored, or when
+    // either endpoint is an arb-ignored proposed table.
+    const tableIgnored = id => { const t = DATA.tables.find(x => x.id === id); return !!(t && t.proposed && tableArb(id).ignore); };
+    const arbSuppressed =
+      (edge.via && edge.viaTable && colArb(edge.viaTable, edge.via).ignore) ||
+      tableIgnored(edge.from) || tableIgnored(edge.to);
 
     const fromPos = positions[edge.from];
     const toPos = positions[edge.to];
@@ -884,7 +1036,7 @@ function renderEdges(visibleIds) {
     g.classList.add('edge');
     g.dataset.from = edge.from;
     g.dataset.to = edge.to;
-    if (!bothVisible) g.classList.add('hidden');
+    if (!bothVisible || arbSuppressed) g.classList.add('hidden');
 
     const d = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -910,6 +1062,12 @@ function renderEdges(visibleIds) {
       path.setAttribute('marker-end', 'url(#arrow)');
     }
 
+    if (edge.proposed) {
+      // Proposed edges match the proposed-node treatment: violet + dashed.
+      path.setAttribute('stroke', '#8b5cf6');
+      path.setAttribute('stroke-dasharray', '5,3');
+    }
+
     g.appendChild(path);
     g.appendChild(hit); // last so the wide invisible stroke is on top for hit testing
 
@@ -925,7 +1083,7 @@ function renderEdges(visibleIds) {
       label.setAttribute('text-anchor', 'middle');
     }
     label.setAttribute('font-size', '9');
-    label.setAttribute('fill', '#999');
+    label.setAttribute('fill', edge.proposed ? '#8b5cf6' : '#999');
     label.textContent = edge.label;
     g.appendChild(label);
 
@@ -946,7 +1104,7 @@ function renderEdges(visibleIds) {
 
 function getVisibleIds() {
   return DATA.tables
-    .filter(t => !hiddenDomains.has(t.domain) && !hiddenNodes.has(t.id) && !cascadeHiddenNodes.has(t.id))
+    .filter(t => !hiddenDomains.has(t.domain) && !hiddenNodes.has(t.id) && !cascadeHiddenNodes.has(t.id) && matchesProposedFilter(t))
     .map(t => t.id);
 }
 
@@ -1055,6 +1213,12 @@ function openDetailPanel(id) {
   }
   const incoming = inverseRelations[id] || [];
 
+  // Enums shown on the table that owns them (`_home`) or references them (enum_ref).
+  // Proposed AND defined — only proposed ones are arbitrable.
+  const colObjs = (table.columns || []).map(col => typeof col === 'string' ? { name: col } : col);
+  const panelEnums = (DATA.enums || []).filter(e =>
+    e._home === id || colObjs.some(c => c.enum_ref === e.id));
+
   function relRow(rel, isOutgoing) {
     if (rel.poly) {
       const wildcardChip = rel.hasWildcard
@@ -1115,7 +1279,17 @@ function openDetailPanel(id) {
         <span class="detail-badge" style="background:${table.modeled ? '#48bb78' : '#ed8936'}">
           ${table.modeled ? 'modeled' : 'planned'}
         </span>
+        ${table.proposed ? `
+          <span class="badge proposed">proposed</span>
+          <button class="arb-btn${tableArb(id).ignore ? ' on' : ''}" data-arb="ignore-table">ignore table</button>
+        ` : ''}
       </div>
+      ${table.proposed && (table._evidence || table._provenance) ? `
+        <div class="detail-evidence">evidence: ${escapeHtml(table._evidence || '—')} · provenance: ${escapeHtml(table._provenance || 'design')}</div>
+      ` : ''}
+      ${table.proposed && tableArb(id).ignore ? `
+        <div class="detail-arb-note">ignored — this table will be dropped from the arbitrated export</div>
+      ` : ''}
     </div>
 
     ${table.notes ? `
@@ -1134,19 +1308,73 @@ function openDetailPanel(id) {
             ${table.columns.map(col => {
               const c = typeof col === 'string' ? { name: col } : col;
               const fkTarget = c.fk && (typeof c.fk === 'string' ? c.fk : c.fk.table);
+              const arb = colArb(id, c.name);
+              const effType = (arb.type != null ? arb.type : (c.type || ''));
+              const refEnum = c.enum_ref && (DATA.enums || []).find(e => e.id === c.enum_ref);
               const flags = [];
               if (c.pk) flags.push('<span class="col-flag pk" title="primary key">PK</span>');
               if (fkTarget) flags.push(`<span class="col-flag fk" title="references ${escapeHtml(fkTarget)}">FK→${escapeHtml(fkTarget)}</span>`);
               if (c.nullable === false) flags.push('<span class="col-flag nn" title="NOT NULL">NN</span>');
               if (c.unique) flags.push('<span class="col-flag" title="unique">U</span>');
-              const navAttr = fkTarget && tableById[fkTarget] ? ` class="navigable" data-target="${escapeHtml(fkTarget)}"` : '';
+              if (c.enum_ref) {
+                if (refEnum && refEnum.proposed) flags.push(`<span class="col-flag proposed" title="references proposed enum">enum→${escapeHtml(refEnum.id)} (proposed)</span>`);
+                else if (refEnum) flags.push(`<span class="col-flag" title="references enum">enum→${escapeHtml(refEnum.id)}</span>`);
+                else flags.push(`<span class="col-flag enum-gap" title="enum_ref resolves to no enums[] entry (lattice gap)">enum→${escapeHtml(c.enum_ref)} (undefined)</span>`);
+              }
+              if (c.status === 'inferred') flags.push('<span class="col-flag inferred" title="derived from the id/FK convention, not an operator-confirmed atom">inferred</span>');
+              if (c.proposed) {
+                flags.push('<span class="col-flag proposed">proposed</span>');
+                flags.push(`<button class="arb-btn${arb.ignore ? ' on' : ''}" data-arb="ignore" data-col="${escapeHtml(c.name)}">ignore</button>`);
+                flags.push(`<button class="arb-btn${arb.type != null ? ' on' : ''}" data-arb="overrule" data-col="${escapeHtml(c.name)}">overrule</button>`);
+              }
+              const rowCls = [];
+              if (fkTarget && tableById[fkTarget]) rowCls.push('navigable');
+              if (arb.ignore) rowCls.push('arb-ignored');
+              if (c.status === 'inferred') rowCls.push('col-inferred');
+              const clsAttr = rowCls.length ? ` class="${rowCls.join(' ')}"` : '';
+              const tgtAttr = fkTarget && tableById[fkTarget] ? ` data-target="${escapeHtml(fkTarget)}"` : '';
               return `
-                <tr${navAttr}>
+                <tr${clsAttr}${tgtAttr}>
                   <td class="col-name">${escapeHtml(c.name)}</td>
-                  <td class="col-type">${escapeHtml(c.type || '')}</td>
+                  <td class="col-type">${escapeHtml(effType)}</td>
                   <td class="col-flags">${flags.join('')}</td>
                 </tr>
                 ${c.notes ? `<tr><td colspan="3" class="col-notes">${escapeHtml(c.notes)}</td></tr>` : ''}
+                ${c.proposed && (c._evidence || c._provenance) ? `<tr><td colspan="3" class="col-evidence">evidence: ${escapeHtml(c._evidence || '—')} · provenance: ${escapeHtml(c._provenance || 'design')}</td></tr>` : ''}
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : ''}
+
+    ${panelEnums.length ? `
+      <div class="detail-section">
+        <div class="detail-section-title">Enums (${panelEnums.length})</div>
+        <table class="detail-columns">
+          <tbody>
+            ${panelEnums.map(en => {
+              const values = (en.values || []).map(v =>
+                typeof v === 'string' ? v : (v.label || v.label_ja ? v.code + '=' + (v.label || v.label_ja) : v.code)
+              ).join(', ');
+              const ignored = en.proposed && enumArb(en.id).ignore;
+              const rowCls = [];
+              if (ignored) rowCls.push('arb-ignored');
+              if (en.status === 'inferred') rowCls.push('col-inferred');
+              const enFlags = [];
+              if (en.proposed) {
+                enFlags.push('<span class="col-flag proposed">proposed</span>');
+                enFlags.push(`<button class="arb-btn${ignored ? ' on' : ''}" data-arb="ignore-enum" data-enum="${escapeHtml(en.id)}">ignore</button>`);
+              } else if (en.status === 'inferred') {
+                enFlags.push('<span class="col-flag inferred" title="derived by convention, not an operator-confirmed atom">inferred</span>');
+              }
+              return `
+                <tr${rowCls.length ? ` class="${rowCls.join(' ')}"` : ''}>
+                  <td class="col-name">${escapeHtml(en.id)}</td>
+                  <td class="col-type">${escapeHtml(values)}</td>
+                  <td class="col-flags">${enFlags.join('')}</td>
+                </tr>
+                ${en._evidence || en._provenance ? `<tr><td colspan="3" class="col-evidence">evidence: ${escapeHtml(en._evidence || '—')} · provenance: ${escapeHtml(en._provenance || 'design')}</td></tr>` : ''}
               `;
             }).join('')}
           </tbody>
@@ -1166,6 +1394,29 @@ function openDetailPanel(id) {
 
     <button id="detail-hide-btn"></button>
   `;
+
+  // Wire arbitration controls (proposal mode): per-column ignore/overrule,
+  // whole-table ignore, per-enum ignore.
+  body.querySelectorAll('.arb-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();                       // don't trigger row navigation
+    const kind = btn.dataset.arb;
+    if (kind === 'ignore-table') {
+      setArb('table::' + id, cur => { if (cur.ignore) delete cur.ignore; else cur.ignore = true; });
+    } else if (kind === 'ignore-enum') {
+      setArb('enum::' + btn.dataset.enum, cur => { if (cur.ignore) delete cur.ignore; else cur.ignore = true; });
+    } else {
+      const col = btn.dataset.col;
+      if (kind === 'ignore') {
+        setArb(id + '::' + col, cur => { if (cur.ignore) delete cur.ignore; else cur.ignore = true; });
+      } else {
+        const cur = colArb(id, col);
+        const nt = prompt('Overrule "' + col + '" type (blank = keep original):', cur.type != null ? cur.type : '');
+        if (nt === null) return;               // cancelled
+        setArb(id + '::' + col, c => { if (nt.trim()) c.type = nt.trim(); else delete c.type; });
+      }
+    }
+    openDetailPanel(id);                        // refresh the panel
+  }));
 
   // Wire the hide button — text reflects current state
   const hideBtn = document.getElementById('detail-hide-btn');
@@ -1260,6 +1511,9 @@ function renderSidebar() {
 
     const color = DOMAIN_COLORS[domain] || '#999';
 
+    const anyVisible = tables.some(matchesProposedFilter);
+    if (!anyVisible) continue;
+
     const domainEl = document.createElement('div');
     domainEl.className = 'sidebar-domain';
     const label = document.createElement('div');
@@ -1270,12 +1524,15 @@ function renderSidebar() {
     nav.appendChild(domainEl);
 
     for (const t of tables) {
+      if (!matchesProposedFilter(t)) continue;
       const row = document.createElement('div');
       row.className = 'sidebar-table';
       row.dataset.id = t.id;
       const isHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id) || hiddenDomains.has(t.domain);
       if (isHidden) row.classList.add('hidden-node');
       if (highlightedNode === t.id) row.classList.add('highlighted');
+      const isArbIgnored = !!(t.proposed && tableArb(t.id).ignore);
+      if (isArbIgnored) row.classList.add('arb-ignored');
 
       const domainOff = hiddenDomains.has(t.domain);
       const userHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id);
@@ -1288,10 +1545,11 @@ function renderSidebar() {
         <button class="${eyeClasses.join(' ')}" title="Toggle visibility">${eyeChar}</button>
         <div class="row-body">
           <div class="table-name-en">${t.name}</div>
-          <div class="table-name-ja">${t.name_ja}</div>
+          <div class="table-name-ja">${t.name_ja || ''}</div>
           <div class="table-badges">
             <span class="badge">${t.type}</span>
             ${!t.modeled ? '<span class="badge not-modeled">planned</span>' : ''}
+            ${t.proposed ? `<span class="badge proposed">${isArbIgnored ? 'ignored' : 'proposed'}</span>` : ''}
           </div>
         </div>
       `;
@@ -1353,6 +1611,9 @@ function resetState() {
   hiddenNodes.clear();
   cascadeHiddenNodes.clear();
   hiddenDomains.clear();
+  proposedFilter = 'all';
+  const filterEl = document.getElementById('proposed-filter');
+  if (filterEl) filterEl.value = 'all';
   highlightedNode = null;
   closeDetailPanel();
   render();
@@ -1448,6 +1709,14 @@ function normalizeData(data) {
     throw new Error('missing "tables" array');
   }
 
+  // Snapshot the pristine input BEFORE mutation (source for the arbitrated export), and
+  // detect proposal mode = any element carries `proposed: true`.
+  RAW_INPUT = JSON.parse(JSON.stringify(data));
+  data.__hasProposed = data.tables.some(t =>
+      t.proposed || (Array.isArray(t.columns) && t.columns.some(c => typeof c === 'object' && c.proposed))
+                 || (Array.isArray(t.relations) && t.relations.some(r => r && r.proposed)))
+    || (Array.isArray(data.enums) && data.enums.some(e => e.proposed));
+
   if (!Array.isArray(data.domains) || data.domains.length === 0) {
     data.domains = deriveDomains(data.tables);
   } else {
@@ -1488,10 +1757,15 @@ function deriveRelations(tables) {
     const rels = [];
     for (const col of (t.columns || [])) {
       if (!col || typeof col !== 'object') continue;
+      // Derived relations inherit `proposed` from their carrying column (or the whole
+      // table); via/viaTable point back to that column so arbitration can drop the edge.
+      const proposed = !!(col.proposed || t.proposed);
       if (col.polymorphic && Array.isArray(col.polymorphic.targets)) {
-        rels.push({ type: 'polymorphic', targets: col.polymorphic.targets, label: col.name });
+        rels.push({ type: 'polymorphic', targets: col.polymorphic.targets, label: col.name,
+                    proposed, via: col.name, viaTable: t.id });
       } else if (col.fk) {
-        rels.push({ type: 'belongs_to', target: col.fk, label: col.name });
+        rels.push({ type: 'belongs_to', target: col.fk, label: col.name,
+                    proposed, via: col.name, viaTable: t.id });
       }
     }
     t.relations = rels;
@@ -1508,7 +1782,8 @@ function deriveRelations(tables) {
         (r.target === child.id || (r.targets || []).includes(child.id)) &&
         (r.type === 'has_many' || r.type === 'has_one' || r.type === 'extends' || r.type === 'many_to_many')
       );
-      if (!exists) parent.relations.push({ type: 'has_many', target: child.id });
+      if (!exists) parent.relations.push({ type: 'has_many', target: child.id,
+        proposed: !!rel.proposed, via: rel.via, viaTable: rel.viaTable || child.id });
     }
   }
 
@@ -1525,7 +1800,8 @@ function deriveRelations(tables) {
     const already = parent.relations.some(r =>
       r.type === 'extends' && (r.target === child.id || (r.targets || []).includes(child.id))
     );
-    if (!already) parent.relations.push({ type: 'extends', target: child.id });
+    if (!already) parent.relations.push({ type: 'extends', target: child.id,
+      proposed: !!(pkFk.proposed || child.proposed), via: pkFk.name, viaTable: child.id });
   }
 }
 
@@ -1684,7 +1960,10 @@ function pickFile() {
     const acceptRaw = (raw) => {
       try {
         const data = normalizeData(raw);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        // Cache the PRISTINE input (normalizeData snapshots it into RAW_INPUT before it
+        // mutates in place), so a later reload re-snapshots pristine data — the arbitrated
+        // export must not carry normalize-injected fields (modeled/relations/fk_ref…).
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(RAW_INPUT));
         overlay.remove();
         resolve(data);
       } catch (e) { setError('Invalid schema: ' + e.message); }
@@ -1750,9 +2029,15 @@ function buildFrozenHTML(data) {
 <header id="header">
   <span class="app-title">flatbase <small>v0.5</small></span>
   <div id="domain-filters"></div>
+  <select id="proposed-filter" title="Filter by proposed/defined">
+    <option value="all">Show: All</option>
+    <option value="proposed">Proposed only</option>
+    <option value="defined">Defined only</option>
+  </select>
   <button id="reset-btn">Reset</button>
-  <button id="reload-data-btn" title="Load a different tables.json">↻ Data</button>
+  <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
 </header>
 
 <div id="main">
@@ -1789,8 +2074,11 @@ ${bodyMarkup}
 }
 
 function exportFrozenHTML() {
-  if (!DATA) return;
-  const html = buildFrozenHTML(DATA);
+  if (!DATA || !RAW_INPUT) return;
+  // Bake the PRISTINE input, not the normalized DATA: the frozen load path re-runs
+  // normalizeData() anyway, and it keeps RAW_INPUT clean in the frozen viewer so the
+  // ↓ Proposal export stays free of normalize-injected fields.
+  const html = buildFrozenHTML(RAW_INPUT);
   const blob = new Blob([html], { type: 'text/html' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
@@ -1817,6 +2105,9 @@ async function loadData() {
 
 function clearCachedData() {
   localStorage.removeItem(STORAGE_KEY);
+  // Arbitration decisions belong to the loaded proposal — a data reset discards them too,
+  // so a new proposal with the same meta.project never inherits stale decisions.
+  try { if (DATA) localStorage.removeItem(arbKey()); } catch {}
   location.reload();
 }
 
@@ -1832,7 +2123,16 @@ async function init() {
   render();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
+  document.getElementById('proposed-filter').addEventListener('change', (e) => {
+    proposedFilter = e.target.value;
+    render();
+  });
   document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
+  document.getElementById('export-proposal-btn').addEventListener('click', exportProposal);
+  if (DATA.__hasProposed) {
+    loadArbitration();
+    document.getElementById('export-proposal-btn').style.display = '';
+  }
   const reloadBtn = document.getElementById('reload-data-btn');
   if (window.__BAKED_DATA__) {
     reloadBtn.style.display = 'none';
