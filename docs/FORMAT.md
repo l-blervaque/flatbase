@@ -152,7 +152,13 @@ A column is either a plain string (just the name) or an object:
 ```
 
 In the detail panel, `fk` becomes a clickable badge that navigates to the
-referenced table.
+referenced table. `enum_ref` becomes an `enum→<id>` badge for any resolvable
+reference (violet when the enum is proposed); an `enum_ref` with no matching
+`enums[]` entry renders as `enum→<id> (undefined)` — a schema gap, not hidden.
+
+Column `status` is optional (`confirmed` | `inferred` | `todo`): renderers MAY
+dim `inferred` columns (convention-derived, e.g. auto id/FK columns) to
+distinguish them from operator-confirmed ones. Absent `status` renders as today.
 
 ---
 
@@ -205,6 +211,11 @@ derived for that table.
 
 `values[].extension` (optional) names a table that exists when this code is
 chosen — useful for STI-style modelling.
+
+The detail panel lists every enum relevant to a table (owning `_home` or
+referenced by one of its columns) under an "Enums" section. Defined enums are
+accepted data — no arbitration controls; only `proposed` ones get an ignore
+button. Enum `status` follows the column convention (`inferred` MAY be dimmed).
 
 ---
 

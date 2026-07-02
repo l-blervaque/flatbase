@@ -2,6 +2,11 @@
   "meta": { "project": "proposed-fixture" },
   "domains": [{ "id": "d", "color": "#4E79A7" }],
   "enums": [
+    { "id": "currency", "status": "confirmed", "_home": "other_tbl",
+      "values": [
+        { "code": "jpy", "label": "円" },
+        { "code": "usd", "label": "USD" }
+      ] },
     { "id": "sample_status", "proposed": true, "_home": "existing_tbl",
       "_evidence": "prose: 'status is either draft or final'", "_provenance": "design",
       "values": [
@@ -24,7 +29,9 @@
     { "id": "other_tbl", "name": "Other", "domain": "d", "type": "entity",
       "status": "complete",
       "columns": [
-        { "name": "id", "type": "bigint", "pk": true }
+        { "name": "id", "type": "bigint", "pk": true, "status": "inferred" },
+        { "name": "currency", "type": "enum", "enum_ref": "currency", "status": "confirmed" },
+        { "name": "legacy_ref", "type": "enum", "enum_ref": "missing_enum" }
       ] },
     { "id": "proposed_tbl", "name": "Proposed", "domain": "d", "type": "entity",
       "status": "skeleton", "proposed": true,
