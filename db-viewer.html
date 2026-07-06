@@ -49,6 +49,14 @@
     }
     .domain-chip.off { opacity: 0.35; }
     .domain-chip input { accent-color: #fff; cursor: pointer; }
+    .domain-chip input[type="color"] {
+      width: 14px;
+      height: 14px;
+      padding: 0;
+      border: none;
+      background: none;
+      border-radius: 3px;
+    }
 
     #reset-btn, #export-btn, #reload-data-btn {
       background: #313244;
@@ -77,6 +85,27 @@
       padding: 8px 0;
     }
 
+    #sidebar-tools {
+      position: sticky;
+      top: -8px;               /* cancels #sidebar's top padding while stuck */
+      margin-top: -8px;
+      background: #fff;
+      padding: 10px 12px 8px;
+      border-bottom: 1px solid #eee;
+      z-index: 2;
+    }
+    #sidebar-search {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 5px 8px;
+      font-size: 12px;
+      border: 1px solid #cbd5e0;
+      border-radius: 5px;
+      outline: none;
+    }
+    #sidebar-search:focus { border-color: #94a3b8; }
+    #sidebar-count { font-size: 10px; color: #94a3b8; margin-top: 4px; }
+
     .sidebar-domain { padding: 6px 12px 2px; }
     .sidebar-domain-label {
       font-size: 10px;
@@ -84,7 +113,10 @@
       text-transform: uppercase;
       letter-spacing: 0.08em;
       opacity: 0.5;
+      display: flex;
+      justify-content: space-between;
     }
+    .sidebar-domain-count { font-weight: 400; }
 
     .sidebar-table {
       padding: 5px 16px;
@@ -409,7 +441,13 @@
 </header>
 
 <div id="main">
-  <nav id="sidebar"></nav>
+  <nav id="sidebar">
+    <div id="sidebar-tools">
+      <input id="sidebar-search" type="search" placeholder="Search tables…" autocomplete="off">
+      <div id="sidebar-count"></div>
+    </div>
+    <div id="sidebar-list"></div>
+  </nav>
   <div id="diagram-wrap">
     <svg id="diagram">
       <defs id="svg-defs"></defs>
@@ -438,7 +476,13 @@ let hiddenNodes = new Set();
 let cascadeHiddenNodes = new Set();
 let hiddenDomains = new Set();
 let proposedFilter = 'all';
+let sidebarSearch = '';        // lowercase needle; filters the sidebar list only
 let highlightedNode = null;
+
+function matchesSearch(t) {
+  if (!sidebarSearch) return true;
+  return (t.name + ' ' + (t.name_ja || '') + ' ' + t.id).toLowerCase().includes(sidebarSearch);
+}
 
 function matchesProposedFilter(t) {
   if (proposedFilter === 'proposed') return !!t.proposed;
@@ -1492,7 +1536,7 @@ function getNeighbors(id) {
 }
 
 function renderSidebar() {
-  const nav = document.getElementById('sidebar');
+  const nav = document.getElementById('sidebar-list');
   nav.innerHTML = '';
 
   const byDomain = {};
@@ -1505,26 +1549,33 @@ function renderSidebar() {
     byDomain[t.domain].push(t);
   }
 
+  let totalShown = 0;
   for (const domain of DOMAIN_ORDER) {
     const tables = byDomain[domain] || [];
     if (!tables.length) continue;
 
     const color = DOMAIN_COLORS[domain] || '#999';
 
-    const anyVisible = tables.some(matchesProposedFilter);
-    if (!anyVisible) continue;
+    const shown = tables.filter(t => matchesProposedFilter(t) && matchesSearch(t));
+    totalShown += shown.length;
+    if (!shown.length) continue;
 
     const domainEl = document.createElement('div');
     domainEl.className = 'sidebar-domain';
     const label = document.createElement('div');
     label.className = 'sidebar-domain-label';
     label.style.color = color;
-    label.textContent = domain.toUpperCase();
+    const name = document.createElement('span');
+    name.textContent = domain.toUpperCase();
+    const count = document.createElement('span');
+    count.className = 'sidebar-domain-count';
+    count.textContent = shown.length === tables.length ? String(tables.length) : shown.length + '/' + tables.length;
+    label.appendChild(name);
+    label.appendChild(count);
     domainEl.appendChild(label);
     nav.appendChild(domainEl);
 
-    for (const t of tables) {
-      if (!matchesProposedFilter(t)) continue;
+    for (const t of shown) {
       const row = document.createElement('div');
       row.className = 'sidebar-table';
       row.dataset.id = t.id;
@@ -1567,6 +1618,10 @@ function renderSidebar() {
       nav.appendChild(row);
     }
   }
+
+  const total = DATA.tables.length;
+  document.getElementById('sidebar-count').textContent =
+    totalShown === total ? total + ' tables' : totalShown + ' / ' + total + ' tables';
 }
 
 function renderDomainFilters() {
@@ -1580,12 +1635,44 @@ function renderDomainFilters() {
     const chip = document.createElement('label');
     chip.className = 'domain-chip' + (isOff ? ' off' : '');
     chip.style.background = color;
-    chip.innerHTML = `<input type="checkbox" ${isOff ? '' : 'checked'}> ${domain}`;
-    chip.querySelector('input').addEventListener('change', (e) => {
+    chip.innerHTML = `<input type="checkbox" ${isOff ? '' : 'checked'}> ${domain} ` +
+      `<input type="color" value="${toHex6(color)}" title="Change this domain's color">`;
+    chip.querySelector('input[type="checkbox"]').addEventListener('change', (e) => {
       toggleDomain(domain, e.target.checked);
+    });
+    chip.querySelector('input[type="color"]').addEventListener('input', (e) => {
+      setDomainColor(domain, e.target.value);
     });
     container.appendChild(chip);
   }
+}
+
+// <input type="color"> only accepts #rrggbb — expand #rgb, fall back to grey.
+function toHex6(color) {
+  const c = String(color || '').trim();
+  if (/^#[0-9a-f]{6}$/i.test(c)) return c.toLowerCase();
+  if (/^#[0-9a-f]{3}$/i.test(c)) return '#' + [...c.slice(1)].map(ch => ch + ch).join('').toLowerCase();
+  return '#999999';
+}
+
+// Live domain recolor. Mutates DATA + RAW_INPUT (so ↓ Export / ↓ Proposal carry the new
+// color) and re-caches the pristine input so the color survives a reload in atelier mode.
+function setDomainColor(domain, color) {
+  DOMAIN_COLORS[domain] = color;
+  const d = (DATA.domains || []).find(x => x.id === domain);
+  if (d) d.color = color;
+  if (RAW_INPUT) {
+    if (!Array.isArray(RAW_INPUT.domains) || !RAW_INPUT.domains.length) {
+      // Domains were auto-derived: materialize them so the choice is exportable.
+      RAW_INPUT.domains = DATA.domains.map(x => ({ id: x.id, color: x.color }));
+    }
+    const rd = RAW_INPUT.domains.find(x => x.id === domain);
+    if (rd) rd.color = color;
+    if (!window.__BAKED_DATA__) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(RAW_INPUT)); } catch {}
+    }
+  }
+  render();
 }
 
 function toggleDomain(domain, enabled) {
@@ -1614,6 +1701,9 @@ function resetState() {
   proposedFilter = 'all';
   const filterEl = document.getElementById('proposed-filter');
   if (filterEl) filterEl.value = 'all';
+  sidebarSearch = '';
+  const searchEl = document.getElementById('sidebar-search');
+  if (searchEl) searchEl.value = '';
   highlightedNode = null;
   closeDetailPanel();
   render();
@@ -2041,7 +2131,13 @@ function buildFrozenHTML(data) {
 </header>
 
 <div id="main">
-  <nav id="sidebar"></nav>
+  <nav id="sidebar">
+    <div id="sidebar-tools">
+      <input id="sidebar-search" type="search" placeholder="Search tables…" autocomplete="off">
+      <div id="sidebar-count"></div>
+    </div>
+    <div id="sidebar-list"></div>
+  </nav>
   <div id="diagram-wrap">
     <svg id="diagram">
       <defs id="svg-defs"></defs>
@@ -2123,6 +2219,10 @@ async function init() {
   render();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
+  document.getElementById('sidebar-search').addEventListener('input', (e) => {
+    sidebarSearch = e.target.value.trim().toLowerCase();
+    renderSidebar();               // sidebar-only filter — the diagram is untouched
+  });
   document.getElementById('proposed-filter').addEventListener('change', (e) => {
     proposedFilter = e.target.value;
     render();
