@@ -46,6 +46,7 @@ generate new tables that the viewer can render.
   "type":    "entity",                  // entity | extension | pivot | reference | cross-cutting
   "status":  "complete",                // skeleton | partial | complete   (optional; preferred)
   "modeled": true,                      // legacy alias for status: true ↔ complete
+  "tags":    ["mvp", "wave-2"],         // optional; free-form labels, rendered as chips
   "description": "...",                 // optional
   "notes":   "...",                     // optional; shown in detail panel
   "columns": [ <column>, ... ],         // optional but strongly recommended
@@ -60,19 +61,24 @@ generate new tables that the viewer can render.
 ### Rendering
 
 - **Border** — solid if `status === "complete"` (or `modeled: true`); dashed
-  otherwise. The "planned" label is shown on the node when not complete.
+  otherwise. `status` has no textual rendering (the former "planned"/"modeled"
+  labels were removed — use `tags` for anything worth reading).
 - **Badge** — `type` is displayed inside the node and in the sidebar.
+- **Tags** — free-form `tags[]` render as `#tag` chips in the sidebar and the
+  detail panel, and as a small gray `#tag` label on the node (truncated;
+  suppressed on `proposed` nodes to avoid overlapping the proposed flag). The
+  sidebar search also matches tags.
 - **Color** — comes from the table's `domain` (looked up in `domains[]`).
 
 ### `status` vs `modeled`
 
 `status` is the preferred field. `modeled` stays as a backward-compat alias:
 
-| `status`     | `modeled` | Border  | Badge       |
-|--------------|-----------|---------|-------------|
-| `complete`   | `true`    | solid   | type only   |
-| `partial`    | —         | dashed  | + `planned` |
-| `skeleton`   | `false`   | dashed  | + `planned` |
+| `status`     | `modeled` | Border  |
+|--------------|-----------|---------|
+| `complete`   | `true`    | solid   |
+| `partial`    | —         | dashed  |
+| `skeleton`   | `false`   | dashed  |
 
 If both are present, `status` wins.
 
