@@ -166,7 +166,7 @@
       background: #e5e7eb;
       color: #374151;
     }
-    .badge.not-modeled { background: #fde8e8; color: #c53030; }
+    .badge.tag { background: #edf2f7; color: #4a5568; }
     .badge.proposed { background: #ede9fe; color: #5b21b6; }
     .node.arb-ignored { opacity: 0.35; }
     .sidebar-table.arb-ignored .table-name-en { text-decoration: line-through; opacity: 0.5; }
@@ -479,9 +479,16 @@ let proposedFilter = 'all';
 let sidebarSearch = '';        // lowercase needle; filters the sidebar list only
 let highlightedNode = null;
 
+function tableTags(t) {
+  return Array.isArray(t.tags)
+    ? t.tags.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim())
+    : [];
+}
+
 function matchesSearch(t) {
   if (!sidebarSearch) return true;
-  return (t.name + ' ' + (t.name_ja || '') + ' ' + t.id).toLowerCase().includes(sidebarSearch);
+  return (t.name + ' ' + (t.name_ja || '') + ' ' + t.id + ' ' + tableTags(t).join(' '))
+    .toLowerCase().includes(sidebarSearch);
 }
 
 function matchesProposedFilter(t) {
@@ -852,19 +859,22 @@ function renderNodes() {
     badgeText.textContent = t.type;
     g.appendChild(badgeText);
 
-    if (!t.modeled) {
-      const nm = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      nm.setAttribute('x', pos.x + NODE_W - 8);
-      nm.setAttribute('y', pos.y + 58);
-      nm.setAttribute('font-size', '9');
-      nm.setAttribute('text-anchor', 'end');
-      nm.setAttribute('fill', '#c53030');
-      nm.textContent = 'planned';
-      g.appendChild(nm);
+    const nodeTags = tableTags(t);
+    if (nodeTags.length && !t.proposed) {
+      const tg = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      tg.setAttribute('x', pos.x + NODE_W - 8);
+      tg.setAttribute('y', pos.y + 58);
+      tg.setAttribute('font-size', '9');
+      tg.setAttribute('text-anchor', 'end');
+      tg.setAttribute('fill', '#718096');
+      let label = nodeTags.map(s => '#' + s).join(' ');
+      if (label.length > 18) label = label.slice(0, 17) + '…';
+      tg.textContent = label;
+      g.appendChild(tg);
     }
     if (t.proposed) {
       const pl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      // Right of the type badge (x+10..x+80), left of the end-anchored "planned" label.
+      // Right of the type badge (x+10..x+80); tags are skipped on proposed nodes to avoid overlap.
       pl.setAttribute('x', pos.x + 86);
       pl.setAttribute('y', pos.y + 58);
       pl.setAttribute('font-size', '9');
@@ -1320,9 +1330,7 @@ function openDetailPanel(id) {
       <div class="detail-meta-row">
         <span class="detail-badge" style="background:${color}">${escapeHtml(table.domain)}</span>
         <span class="detail-badge" style="background:#718096">${escapeHtml(table.type)}</span>
-        <span class="detail-badge" style="background:${table.modeled ? '#48bb78' : '#ed8936'}">
-          ${table.modeled ? 'modeled' : 'planned'}
-        </span>
+        ${tableTags(table).map(tag => `<span class="badge tag">#${escapeHtml(tag)}</span>`).join('')}
         ${table.proposed ? `
           <span class="badge proposed">proposed</span>
           <button class="arb-btn${tableArb(id).ignore ? ' on' : ''}" data-arb="ignore-table">ignore table</button>
@@ -1599,7 +1607,7 @@ function renderSidebar() {
           <div class="table-name-ja">${t.name_ja || ''}</div>
           <div class="table-badges">
             <span class="badge">${t.type}</span>
-            ${!t.modeled ? '<span class="badge not-modeled">planned</span>' : ''}
+            ${tableTags(t).map(tag => `<span class="badge tag">#${escapeHtml(tag)}</span>`).join('')}
             ${t.proposed ? `<span class="badge proposed">${isArbIgnored ? 'ignored' : 'proposed'}</span>` : ''}
           </div>
         </div>

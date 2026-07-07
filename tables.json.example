@@ -58,6 +58,7 @@
       "domain": "commercial",
       "type": "entity",
       "modeled": true,
+      "tags": ["mvp", "core"],
       "relations": [
         { "type": "belongs_to", "target": "publisher" },
         { "type": "many_to_many", "target": "author" },
@@ -171,6 +172,7 @@
       "domain": "customer",
       "type": "entity",
       "modeled": false,
+      "tags": ["phase-2"],
       "notes": "Phase 2.",
       "relations": [
         { "type": "belongs_to", "target": "customer" },

@@ -44,7 +44,7 @@ Inside the HTML:
   - Sidebar click → highlights node + scrolls SVG to it.
   - Reset → restores all state.
 
-Node visuals encode domain (fill color), type (badge), and `modeled` status (solid vs dashed border). Edge visuals encode relation type (see `docs/superpowers/specs/2026-05-12-db-viewer-design.md` for the full mapping).
+Node visuals encode domain (fill color), type (badge), `modeled` status (solid vs dashed border — no textual label), and free-form `tags` (gray `#tag` chips/labels). Edge visuals encode relation type (see `docs/superpowers/specs/2026-05-12-db-viewer-design.md` for the full mapping).
 
 ## Running / developing
 
@@ -60,7 +60,7 @@ Then open `db-viewer.html` in a browser. Edit the HTML or `tables.json`, reload.
 
 - **Keep it dependency-free.** Viewer is a single HTML file + a JSON sidecar. Don't introduce bundlers, npm, frameworks, or external CDN imports unless explicitly asked.
 - **`tables.json` is gitignored**; never commit it. Sample data goes in `tables.json.example`.
-- **Schema shape** — see `docs/FORMAT.md`. Quick summary: `{ meta, domains?: [{id, color}], enums?, tables: [{id, name, name_ja?, domain, type, status? | modeled?, notes?, columns?: [...], relations?: [...] }] }`. `domains` is optional (auto-derived from tables in insertion order + default palette). `relations` is optional — derived from `columns[].fk` and `columns[].polymorphic` when omitted.
+- **Schema shape** — see `docs/FORMAT.md`. Quick summary: `{ meta, domains?: [{id, color}], enums?, tables: [{id, name, name_ja?, domain, type, status? | modeled?, tags?: [string], notes?, columns?: [...], relations?: [...] }] }`. `domains` is optional (auto-derived from tables in insertion order + default palette). `relations` is optional — derived from `columns[].fk` and `columns[].polymorphic` when omitted.
 - **Relation types**: `belongs_to`, `has_one`, `has_many`, `many_to_many`, `extends`, `polymorphic` (uses `targets: [...]` instead of `target`; `"*"` means all tables).
 - **Columns** (optional, per table) — rendered in the detail panel when present. Each entry is either a plain string (just the name) or an object: `{ name, type?, nullable?, pk?, fk?, unique?, enum_ref?, polymorphic?, notes? }`. `fk` is either a string (`"other_table_id"`) or an object (`{ table, column?, on_delete? }`); both produce a clickable badge that navigates to the target table.
 - **Out of scope** for the viewer (per design spec): zoom/pan, drag-to-reposition, persistence, editing the data, filtering by type/modeled. Push back if asked to add these without context. **Exception — proposal-arbitration mode**: the proposed filter, per-element arbitration (ignore / type overrule) and its localStorage persistence are in scope by design (see `docs/FORMAT.md` § Arbitration).
