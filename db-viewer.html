@@ -214,6 +214,17 @@
     }
     .edge.hidden { display: none; }
 
+    /* Focus mode (persistent click state). .dim fades non-neighbours and drops
+       their pointer events; .hi emphasises the focused neighbourhood. Placed
+       AFTER .node.arb-ignored so dim (0.15) wins over ignored (0.35) when both
+       apply; a *neighbour* that is arb-ignored keeps .hi (stays at 0.35, still
+       recognisable). Proposed violet/dash is inline on the rect (stroke +
+       dasharray) so opacity dimming and the stroke-width bump never erase it. */
+    .node.dim, .edge.dim { opacity: 0.15; pointer-events: none; }
+    .node.hi rect { stroke-width: 2.6; }
+    .edge.hi { opacity: 1; }
+    .edge.hi > path:not(.hit-path) { stroke-width: 2.4; }
+
     /* Labels (type label + cardinality badge) are revealed only by directly hovering the edge
        or via a detail-pane pair/bundle highlight. Hovering a connected node does not reveal them. */
     .edge:hover text,
@@ -221,10 +232,11 @@
     .edge.is-pair text,
     .edge.is-pair .cardinality-bg { opacity: 1; }
 
-    /* When something is being hovered, dim everything by default */
-    body.hovering .edge { opacity: 0.12; }
-    body.hovering .edge.is-touching { opacity: 1; }
-    body.hovering .node:not(.is-touching-hover) rect { opacity: 0.45; }
+    /* When something is being hovered, dim everything by default. Suppressed
+       while focus mode is active — focus wins, its .dim/.hi governs instead. */
+    body:not(.focusing).hovering .edge { opacity: 0.12; }
+    body:not(.focusing).hovering .edge.is-touching { opacity: 1; }
+    body:not(.focusing).hovering .node:not(.is-touching-hover) rect { opacity: 0.45; }
 
     /* Hover originating from the detail pane: overlay an orange emphasis on the specific link(s),
        while the selected table's normal neighborhood highlight stays intact. */
@@ -490,6 +502,11 @@ let hiddenDomains = new Set();
 let proposedFilter = 'all';
 let sidebarSearch = '';        // lowercase needle; filters the sidebar list only
 let highlightedNode = null;
+
+// Focus mode (persistent click state) — distinct from the transient hover state
+// (setHoveredNode). A focused node dims everything but its neighbourhood.
+let focusedNode = null;        // id of the click-focused node, or null
+let focusedEdge = null;        // { from, to } of the click-focused edge, or null
 
 // Viewport (pan/zoom) state — the #viewport <g> carries translate + scale.
 let panX = 0, panY = 0, zoomK = 1;
@@ -950,12 +967,17 @@ function renderNodes() {
       g.appendChild(pl);
     }
 
-    // Left-drag repositions the node; a plain click (no 4px movement) opens the
-    // detail panel without recentering (the user is already looking at it). A pan
-    // gesture (space/right-drag) or a drag that emits a click is swallowed by the
-    // capture-phase guard in initViewport().
+    // Left-drag repositions the node; a plain click (no 4px movement) focuses it
+    // and opens the detail panel without recentering (the user is already
+    // looking at it). A pan gesture (space/right-drag) that emits a click is
+    // swallowed by the capture-phase guard in initViewport().
     g.addEventListener('pointerdown', (ev) => startNodeDrag(ev, t.id));
-    g.addEventListener('click', () => { if (spaceDown) return; openDetailPanel(t.id); });
+    g.addEventListener('click', (ev) => {
+      if (spaceDown) return;
+      ev.stopPropagation();            // don't let the background-click clear focus
+      focusNode(t.id);
+      openDetailPanel(t.id);
+    });
     g.addEventListener('mouseenter', () => setHoveredNode(t.id));
     g.addEventListener('mouseleave', () => setHoveredNode(null));
 
@@ -1248,6 +1270,15 @@ function renderEdges(visibleIds) {
         appendCardinalityBadge(g, x2 + to_.dx, y2 + to_.dy, to_.anchor, card.to);
       }
     }
+
+    // Edge click focuses its two endpoints + itself. The wide transparent
+    // hit-path carries the pointer-events; stopPropagation keeps the background
+    // click (clearFocus) from firing.
+    g.addEventListener('click', (ev) => {
+      if (spaceDown || panMoved) return;
+      ev.stopPropagation();
+      focusEdge(edge);
+    });
 
     // Z-order is structural: edge-layer sits before node-layer in the DOM, so
     // edges always render under nodes — just append.
@@ -1590,7 +1621,7 @@ function openDetailPanel(id, opts) {
   body.querySelectorAll('.navigable[data-target]').forEach(el => {
     const tgt = el.dataset.target;
     if (!tableById[tgt]) return;
-    el.addEventListener('click', e => { e.stopPropagation(); openDetailPanel(tgt, { center: true }); });
+    el.addEventListener('click', e => { e.stopPropagation(); focusNode(tgt); openDetailPanel(tgt, { center: true }); });
     el.addEventListener('mouseenter', () => setHoveredNode(tgt, 'detail', id));
     el.addEventListener('mouseleave', () => setHoveredNode(null));
   });
@@ -1606,16 +1637,18 @@ function openDetailPanel(id, opts) {
   // click). Same-id refreshes (arbitration buttons, hide toggle) never recenter.
   if (center) centerViewportOnNode(id);
 
-  render();
-  setHoveredNode(null); // re-applies focus emphasis to the newly selected node
+  render();               // render() runs applyFocus() — focus emphasis is preserved
+  setHoveredNode(null);   // clear any stale transient hover state
 }
 
 function closeDetailPanel() {
   document.getElementById('detail-panel').classList.add('closed');
   openPanelId = null;
   highlightedNode = null;
+  focusedNode = null;   // closing the panel also exits focus (applyFocus runs in render)
+  focusedEdge = null;
   render();
-  setHoveredNode(null); // clears emphasis now that nothing is selected
+  setHoveredNode(null); // clears transient hover emphasis now that nothing is selected
 }
 
 function getNeighbors(id) {
@@ -1713,7 +1746,7 @@ function renderSidebar() {
         toggleNodeVisibility(t.id);
       });
 
-      row.querySelector('.row-body').addEventListener('click', () => openDetailPanel(t.id, { center: true }));
+      row.querySelector('.row-body').addEventListener('click', () => { focusNode(t.id); openDetailPanel(t.id, { center: true }); });
       row.addEventListener('mouseenter', () => setHoveredNode(t.id));
       row.addEventListener('mouseleave', () => setHoveredNode(null));
       nav.appendChild(row);
@@ -1793,6 +1826,7 @@ function render() {
   renderNodes();
   renderSidebar();
   renderDomainFilters();
+  applyFocus();               // re-apply .dim/.hi to the freshly rebuilt DOM
 }
 
 function resetState() {
@@ -1806,6 +1840,8 @@ function resetState() {
   const searchEl = document.getElementById('sidebar-search');
   if (searchEl) searchEl.value = '';
   highlightedNode = null;
+  focusedNode = null;         // Reset clears focus (applyFocus runs inside the render below)
+  focusedEdge = null;
   // Reset semantics: drop any saved arrangement, recompute the layout, and
   // Fit. closeDetailPanel() performs the single render; then fit the fresh graph.
   try { localStorage.removeItem(layoutKey()); } catch {}
@@ -1817,13 +1853,10 @@ function resetState() {
 
 function setHoveredNode(id, source, pairWith) {
   // pairWith may be a string (single-leg orange overlay) or string[] (bundle).
+  // Persistent neighbourhood emphasis is owned by focus mode (applyFocus); this
+  // function handles only the TRANSIENT hover state (and the detail-pane orange
+  // pair overlay), so clearing hover truly clears — no fallback to the selection.
   const svg = document.getElementById('diagram');
-  // When clearing hover, fall back to the selected node so its neighbours stay emphasised.
-  if (id == null && highlightedNode) {
-    id = highlightedNode;
-    source = undefined;
-    pairWith = undefined;
-  }
   const isArrayPair = Array.isArray(pairWith);
   const pairTargets = pairWith == null
     ? []
@@ -2413,6 +2446,61 @@ function cssEscape(s) {
   return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
 }
 
+// ---- focus mode ----
+// applyFocus reads focusedNode/focusedEdge and toggles .dim/.hi on the live DOM
+// (called as the last line of render() so it survives every re-render, and
+// directly on edge focus which does not rebuild the DOM).
+function applyFocus() {
+  const svg = document.getElementById('diagram');
+  if (!svg) return;
+  const nodeEls = svg.querySelectorAll('#node-layer .node');
+  const edgeEls = svg.querySelectorAll('#edge-layer .edge');
+  if (focusedNode == null && focusedEdge == null) {
+    document.body.classList.remove('focusing');
+    nodeEls.forEach(g => g.classList.remove('dim', 'hi'));
+    edgeEls.forEach(g => g.classList.remove('dim', 'hi'));
+    return;
+  }
+  document.body.classList.add('focusing');
+  let keepN, keepEdge;
+  if (focusedEdge) {
+    const { from, to } = focusedEdge;
+    keepN = new Set([from, to]);
+    keepEdge = (f, t) => (f === from && t === to) || (f === to && t === from);
+  } else {
+    keepN = new Set([focusedNode, ...getNeighbors(focusedNode)]);
+    keepEdge = (f, t) => f === focusedNode || t === focusedNode;
+  }
+  nodeEls.forEach(g => {
+    const keep = keepN.has(g.dataset.id);
+    g.classList.toggle('hi', keep);
+    g.classList.toggle('dim', !keep);
+  });
+  edgeEls.forEach(g => {
+    const keep = keepEdge(g.dataset.from, g.dataset.to);
+    g.classList.toggle('hi', keep);
+    g.classList.toggle('dim', !keep);
+  });
+}
+
+function focusNode(id) {
+  focusedNode = id;
+  focusedEdge = null;
+  applyFocus();
+}
+
+function focusEdge(edge) {
+  focusedEdge = { from: edge.from, to: edge.to };
+  focusedNode = null;
+  applyFocus();
+}
+
+function clearFocus() {
+  focusedNode = null;
+  focusedEdge = null;
+  applyFocus();               // class-only — never triggers a full render()
+}
+
 function onWheel(ev) {
   ev.preventDefault();
   const svg = document.getElementById('diagram');
@@ -2474,6 +2562,14 @@ function initViewport() {
     if (panMoved) { ev.stopPropagation(); ev.preventDefault(); panMoved = false; }
   }, true);
 
+  // Background click on empty canvas clears focus. Node/edge handlers
+  // stopPropagation so only true background clicks reach here; a pan on empty
+  // canvas sets panMoved and is ignored.
+  svg.addEventListener('click', () => {
+    if (panMoved) return;
+    clearFocus();
+  });
+
   // Space = hand tool, but never when typing in the sidebar search.
   window.addEventListener('keydown', ev => {
     if (ev.code !== 'Space') return;
@@ -2529,7 +2625,11 @@ async function init() {
   }
   document.getElementById('detail-close').addEventListener('click', closeDetailPanel);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && openPanelId) closeDetailPanel();
+    if (e.key !== 'Escape') return;
+    // Escape clears focus; if a panel is open it closes it too (closeDetailPanel
+    // also clears focus). Both-at-once is intended.
+    if (openPanelId) closeDetailPanel();
+    else clearFocus();
   });
 }
 
