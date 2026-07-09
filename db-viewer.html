@@ -595,149 +595,204 @@ function exportProposal() {
 }
 let positions = {}; // { [id]: { x, y } }
 
+// Seeded PRNG (mulberry32). The layout path must never touch Math.random /
+// Date.now so two fresh loads of the same schema produce byte-identical
+// positions. Reset to LAYOUT_SEED at the top of every computePositions().
+const LAYOUT_SEED = 0x1a2b3c4d;
+let _layoutSeed = LAYOUT_SEED;
+function layoutRng() {
+  _layoutSeed = (_layoutSeed + 0x6D2B79F5) | 0;
+  let t = Math.imul(_layoutSeed ^ (_layoutSeed >>> 15), 1 | _layoutSeed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+// Fruchterman-Reingold "hub-and-spoke" layout. World coordinates centered at
+// origin (no translate-to-positive — the viewport transform + Fit place the
+// graph on screen). Pure + deterministic: writes `positions`, reads DATA only.
 function computePositions() {
-  const N = DATA.tables.length;
-  const idx = {};
-  DATA.tables.forEach((t, i) => { idx[t.id] = i; });
+  _layoutSeed = LAYOUT_SEED;                       // reset seed → deterministic
 
-  // Initial positions: ring around origin (deterministic)
-  const initialRadius = 30 * Math.sqrt(N);
-  const nodes = DATA.tables.map((t, i) => {
-    const angle = (i / N) * 2 * Math.PI;
-    return {
-      id: t.id,
-      x: Math.cos(angle) * initialRadius,
-      y: Math.sin(angle) * initialRadius,
-      vx: 0, vy: 0,
-    };
+  const ids = DATA.tables.map(t => t.id);
+  const adj = {};
+  ids.forEach(id => { adj[id] = new Set(); });
+
+  // Layout edges come from the SAME normalized set the renderer draws
+  // (collectEdges), so parallel relations of distinct types are preserved and
+  // the simulation matches the picture. Self-loops don't pull.
+  const ledges = [];
+  for (const e of collectEdges()) {
+    if (e.from === e.to) continue;
+    if (adj[e.from] === undefined || adj[e.to] === undefined) continue;
+    adj[e.from].add(e.to); adj[e.to].add(e.from);
+    ledges.push(e);
+  }
+
+  const deg = {}; ids.forEach(id => { deg[id] = adj[id].size; });
+  const conn = ids.filter(id => deg[id] > 0);
+  const iso  = ids.filter(id => deg[id] === 0);
+  // Highest-degree connected node → pinned hub at the origin.
+  const center = conn.reduce((a, b) => (deg[b] > deg[a] ? b : a), conn[0] || ids[0]);
+
+  const pos = {};
+  conn.forEach(id => {
+    const a = layoutRng() * 6.2832, r = 110 + layoutRng() * 420;
+    pos[id] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
   });
+  if (center) pos[center] = { x: 0, y: 0 };
 
-  // Build unique edge pairs (skip belongs_to as before)
-  const edgePairs = new Set();
-  const edges = [];
-  for (const t of DATA.tables) {
-    for (const rel of (t.relations || [])) {
-      if (rel.type === 'belongs_to') continue;
-      const targets = rel.targets
-        ? rel.targets.filter(x => x !== '*')
-        : (rel.target ? [rel.target] : []);
-      for (const tgt of targets) {
-        if (idx[tgt] === undefined) continue;
-        const key = [t.id, tgt].sort().join('|');
-        if (edgePairs.has(key)) continue;
-        edgePairs.add(key);
-        edges.push([idx[t.id], idx[tgt]]);
+  const K = 190;                 // ideal edge length ≈ node width
+  const ITER = 420, G = 0.14;    // iterations, center-gravity pull
+  let temp = 420;                // annealing temperature (× 0.975 / iter)
+
+  for (let it = 0; it < ITER; it++) {
+    const dsp = {}; conn.forEach(id => { dsp[id] = { x: 0, y: 0 }; });
+
+    // Repulsion K²/d
+    for (let i = 0; i < conn.length; i++) {
+      for (let j = i + 1; j < conn.length; j++) {
+        const A = pos[conn[i]], B = pos[conn[j]];
+        let dx = A.x - B.x, dy = A.y - B.y;
+        const d = Math.hypot(dx, dy) || 0.01;
+        const f = (K * K) / d, fx = dx / d * f, fy = dy / d * f;
+        dsp[conn[i]].x += fx; dsp[conn[i]].y += fy;
+        dsp[conn[j]].x -= fx; dsp[conn[j]].y -= fy;
       }
     }
-  }
-
-  // Simulation parameters — tuned for ~45 nodes, ~80 edges
-  const ITERATIONS = 800;
-  const REPULSION = 40000;        // pairwise repulsion strength
-  const SPRING_K = 0.06;          // edge spring stiffness
-  const SPRING_LENGTH = 240;      // ideal edge length
-  const CENTER_FORCE = 0.005;     // pull toward origin
-  const DAMPING = 0.82;
-  const MAX_VELOCITY = 30;
-
-  for (let iter = 0; iter < ITERATIONS; iter++) {
-    const fx = new Float64Array(N);
-    const fy = new Float64Array(N);
-
-    // Pairwise repulsion (O(n^2) — fine for ~45 nodes)
-    for (let i = 0; i < N; i++) {
-      for (let j = i + 1; j < N; j++) {
-        let dx = nodes[i].x - nodes[j].x;
-        let dy = nodes[i].y - nodes[j].y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 < 1) { d2 = 1; dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); }
-        const d = Math.sqrt(d2);
-        const force = REPULSION / d2;
-        const ux = dx / d, uy = dy / d;
-        fx[i] += ux * force; fy[i] += uy * force;
-        fx[j] -= ux * force; fy[j] -= uy * force;
-      }
+    // Attraction d²/K
+    for (const e of ledges) {
+      const A = pos[e.from], B = pos[e.to];
+      let dx = A.x - B.x, dy = A.y - B.y;
+      const d = Math.hypot(dx, dy) || 0.01;
+      const f = (d * d) / K, fx = dx / d * f, fy = dy / d * f;
+      dsp[e.from].x -= fx; dsp[e.from].y -= fy;
+      dsp[e.to].x   += fx; dsp[e.to].y   += fy;
     }
-
-    // Edge springs
-    for (const [a, b] of edges) {
-      const dx = nodes[b].x - nodes[a].x;
-      const dy = nodes[b].y - nodes[a].y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const force = SPRING_K * (d - SPRING_LENGTH);
-      const ux = dx / d, uy = dy / d;
-      fx[a] += ux * force; fy[a] += uy * force;
-      fx[b] -= ux * force; fy[b] -= uy * force;
-    }
-
     // Center gravity
-    for (let i = 0; i < N; i++) {
-      fx[i] += -nodes[i].x * CENTER_FORCE;
-      fy[i] += -nodes[i].y * CENTER_FORCE;
-    }
-
-    // Cooling factor — anneal velocity over iterations
-    const cool = 1 - iter / ITERATIONS;
-
-    // Integrate
-    for (let i = 0; i < N; i++) {
-      nodes[i].vx = (nodes[i].vx + fx[i]) * DAMPING * cool;
-      nodes[i].vy = (nodes[i].vy + fy[i]) * DAMPING * cool;
-      // Clamp velocity
-      const vmag = Math.hypot(nodes[i].vx, nodes[i].vy);
-      if (vmag > MAX_VELOCITY) {
-        nodes[i].vx = (nodes[i].vx / vmag) * MAX_VELOCITY;
-        nodes[i].vy = (nodes[i].vy / vmag) * MAX_VELOCITY;
-      }
-      nodes[i].x += nodes[i].vx;
-      nodes[i].y += nodes[i].vy;
-    }
+    conn.forEach(id => { dsp[id].x -= pos[id].x * G; dsp[id].y -= pos[id].y * G; });
+    // Integrate with temperature-limited step; re-pin the hub each iteration.
+    conn.forEach(id => {
+      if (id === center) return;
+      const dx = dsp[id].x, dy = dsp[id].y, d = Math.hypot(dx, dy) || 0.01;
+      const lim = Math.min(d, temp);
+      pos[id].x += dx / d * lim; pos[id].y += dy / d * lim;
+    });
+    if (center) pos[center] = { x: 0, y: 0 };
+    temp *= 0.975;
   }
 
-  // Final overlap resolution: push apart any nodes that still overlap
-  const ITER_FIX = 50;
-  const SEP_X = NODE_W + 20;
-  const SEP_Y = NODE_H + 20;
-  for (let pass = 0; pass < ITER_FIX; pass++) {
+  positions = pos;
+  resolveOverlaps(conn, 30, 26, 320);
+  packComponents(conn, adj);
+  parkIsolated(conn, iso);
+}
+
+// Nudge apart any pair of boxes still overlapping after the force pass.
+function resolveOverlaps(nodes, mxg, myg, iters) {
+  const mw = NODE_W + mxg, mh = NODE_H + myg;
+  for (let t = 0; t < iters; t++) {
     let moved = false;
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
-        const ax = nodes[i].x, ay = nodes[i].y;
-        const bx = nodes[j].x, by = nodes[j].y;
-        const dx = bx - ax, dy = by - ay;
-        const overlapX = SEP_X - Math.abs(dx);
-        const overlapY = SEP_Y - Math.abs(dy);
-        if (overlapX > 0 && overlapY > 0) {
-          // Push along smaller-overlap axis
-          if (overlapX < overlapY) {
-            const push = overlapX / 2 + 1;
-            if (dx >= 0) { nodes[i].x -= push; nodes[j].x += push; }
-            else         { nodes[i].x += push; nodes[j].x -= push; }
-          } else {
-            const push = overlapY / 2 + 1;
-            if (dy >= 0) { nodes[i].y -= push; nodes[j].y += push; }
-            else         { nodes[i].y += push; nodes[j].y -= push; }
-          }
+        const A = positions[nodes[i]], B = positions[nodes[j]];
+        const dx = A.x - B.x, dy = A.y - B.y;
+        const ox = mw - Math.abs(dx), oy = mh - Math.abs(dy);
+        if (ox > 0 && oy > 0) {
           moved = true;
+          if (ox < oy) { const s = (dx < 0 ? -1 : 1) * ox / 2; A.x += s; B.x -= s; }
+          else         { const s = (dy < 0 ? -1 : 1) * oy / 2; A.y += s; B.y -= s; }
         }
       }
     }
     if (!moved) break;
   }
+}
 
-  // Translate so the bounding box starts at (PAD, PAD)
-  let minX = Infinity, minY = Infinity;
-  for (const n of nodes) {
-    minX = Math.min(minX, n.x);
-    minY = Math.min(minY, n.y);
+// Shelf-tile disconnected components so they don't blow up the extent.
+// No-op for a single connected component (the common case) — the force
+// result (centered at origin) is then left untouched.
+function packComponents(conn, adj) {
+  if (conn.length < 2) return;
+  const seen = new Set(), comps = [];
+  conn.forEach(s => {
+    if (seen.has(s)) return;
+    const q = [s], c = []; seen.add(s);
+    while (q.length) { const u = q.pop(); c.push(u); adj[u].forEach(v => { if (!seen.has(v)) { seen.add(v); q.push(v); } }); }
+    comps.push(c);
+  });
+  if (comps.length < 2) return;
+  const GAP = 80, W = NODE_W, H = NODE_H;
+  const boxes = comps.map(c => {
+    let xn = 1e9, xx = -1e9, yn = 1e9, yx = -1e9;
+    c.forEach(id => { const p = positions[id]; xn = Math.min(xn, p.x); xx = Math.max(xx, p.x + W); yn = Math.min(yn, p.y); yx = Math.max(yx, p.y + H); });
+    return { c, xn, yn, w: xx - xn, h: yx - yn, area: (xx - xn) * (yx - yn) };
+  });
+  boxes.sort((a, b) => b.area - a.area);
+  const rowW = Math.max(boxes[0].w, Math.sqrt(boxes.reduce((a, b) => a + b.area, 0)) * 1.4);
+  let cx = 0, cy = 0, rowH = 0;
+  boxes.forEach(b => {
+    if (cx > 0 && cx + b.w > rowW) { cx = 0; cy += rowH + GAP; rowH = 0; }
+    const dx = cx - b.xn, dy = cy - b.yn;
+    b.c.forEach(id => { positions[id].x += dx; positions[id].y += dy; });
+    cx += b.w + GAP; rowH = Math.max(rowH, b.h);
+  });
+}
+
+// Drop isolated (no-relation) nodes into empty pockets inside the connected
+// cluster's bounding box, falling back to a grid below it.
+function parkIsolated(conn, iso) {
+  if (!iso.length) return;
+  const W = NODE_W, H = NODE_H, GX = 30, GY = 26, STEP = 24;
+  if (!conn.length) {
+    const gx = W + 40;
+    iso.forEach((id, i) => { positions[id] = { x: (i % 3) * gx, y: Math.floor(i / 3) * (H + 30) }; });
+    return;
   }
-  positions = {};
-  for (const n of nodes) {
-    positions[n.id] = {
-      x: n.x - minX + PAD,
-      y: n.y - minY + PAD,
-    };
-  }
+  let bxn = 1e9, bxx = -1e9, byn = 1e9, byx = -1e9;
+  conn.forEach(id => { const p = positions[id]; bxn = Math.min(bxn, p.x); bxx = Math.max(bxx, p.x + W); byn = Math.min(byn, p.y); byx = Math.max(byx, p.y + H); });
+  const placed = conn.slice();
+  const freeAt = (x, y) => placed.every(id => { const p = positions[id]; return !(x < p.x + W + GX && p.x < x + W + GX && y < p.y + H + GY && p.y < y + H + GY); });
+  let fb = 0;
+  iso.forEach(id => {
+    let best = null;
+    for (let y = byn; y <= byx - H && !best; y += STEP) {
+      for (let x = bxn; x <= bxx - W; x += STEP) { if (freeAt(x, y)) { best = { x, y }; break; } }
+    }
+    if (!best) { best = { x: bxn + (fb % 3) * (W + 40), y: byx + 60 + Math.floor(fb / 3) * (H + 30) }; fb++; }
+    positions[id] = { x: best.x, y: best.y }; placed.push(id);
+  });
+}
+
+// ---- layout persistence (per project + schema signature) ----
+function layoutKey() {
+  const proj = (DATA && DATA.meta && DATA.meta.project) || 'default';
+  const sig = DATA.tables.map(t => t.id).sort().join(',');
+  let h = 0;
+  for (let i = 0; i < sig.length; i++) h = (Math.imul(h, 31) + sig.charCodeAt(i)) | 0;
+  return 'flatbase.layout.' + proj + '.' + (h >>> 0).toString(36);
+}
+function loadPositions() {
+  try {
+    const raw = localStorage.getItem(layoutKey());
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    if (DATA.tables.every(t => saved[t.id] && typeof saved[t.id].x === 'number')) {
+      positions = {};
+      DATA.tables.forEach(t => { positions[t.id] = { x: saved[t.id].x, y: saved[t.id].y }; });
+      return true;
+    }
+  } catch {}
+  return false;
+}
+function saveLayout() {
+  try { localStorage.setItem(layoutKey(), JSON.stringify(positions)); } catch {}
+}
+// Load-or-compute wrapper. Saved layouts survive reloads; a schema change
+// (different sorted-id signature) invalidates them via layoutKey().
+function applyLayout() {
+  if (loadPositions()) return;
+  computePositions();
+  saveLayout();
 }
 
 function computeAnchors(fromPos, toPos) {
@@ -767,17 +822,6 @@ function computeAnchors(fromPos, toPos) {
     }
   }
   return { from: fromAnchor, to: toAnchor };
-}
-
-function setSVGSize() {
-  const svg = document.getElementById('diagram');
-  let maxX = 0, maxY = 0;
-  for (const { x, y } of Object.values(positions)) {
-    maxX = Math.max(maxX, x + NODE_W + PAD);
-    maxY = Math.max(maxY, y + NODE_H + PAD);
-  }
-  svg.setAttribute('width', maxX);
-  svg.setAttribute('height', maxY);
 }
 
 function renderNodes() {
@@ -1713,25 +1757,12 @@ function resetState() {
   const searchEl = document.getElementById('sidebar-search');
   if (searchEl) searchEl.value = '';
   highlightedNode = null;
+  // Reset semantics: drop any saved arrangement, recompute the layout, and
+  // Fit. closeDetailPanel() performs the single render; then fit the fresh graph.
+  try { localStorage.removeItem(layoutKey()); } catch {}
+  computePositions();
+  saveLayout();
   closeDetailPanel();
-  render();
-}
-
-function highlightNode(id) {
-  highlightedNode = highlightedNode === id ? null : id;
-  render();
-  setHoveredNode(null);
-
-  if (highlightedNode) {
-    const pos = positions[id];
-    if (!pos) return;
-    const wrap = document.getElementById('diagram-wrap');
-    wrap.scrollTo({
-      left: Math.max(0, pos.x - wrap.clientWidth / 2 + NODE_W / 2),
-      top: Math.max(0, pos.y - wrap.clientHeight / 2 + NODE_H / 2),
-      behavior: 'smooth',
-    });
-  }
 }
 
 function setHoveredNode(id, source, pairWith) {
@@ -2209,9 +2240,11 @@ async function loadData() {
 
 function clearCachedData() {
   localStorage.removeItem(STORAGE_KEY);
-  // Arbitration decisions belong to the loaded proposal — a data reset discards them too,
-  // so a new proposal with the same meta.project never inherits stale decisions.
+  // Arbitration decisions and the saved layout belong to the loaded proposal —
+  // a data reset discards them too, so a new proposal with the same
+  // meta.project never inherits stale decisions or node positions.
   try { if (DATA) localStorage.removeItem(arbKey()); } catch {}
+  try { if (DATA) localStorage.removeItem(layoutKey()); } catch {}
   location.reload();
 }
 
@@ -2220,10 +2253,16 @@ async function init() {
   DOMAIN_ORDER = DATA.domains.map(d => d.id);
   DOMAIN_COLORS = Object.fromEntries(DATA.domains.map(d => [d.id, d.color]));
 
-  computePositions();
+  // Arbitration decisions must be loaded before the first paint (proposed nodes
+  // render their ignored/overruled state from them). Layout doesn't depend on it.
+  if (DATA.__hasProposed) {
+    loadArbitration();
+    document.getElementById('export-proposal-btn').style.display = '';
+  }
+
   buildInverseRelations();
-  setSVGSize();
   setupDefs();
+  applyLayout();
   render();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
@@ -2237,10 +2276,6 @@ async function init() {
   });
   document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
   document.getElementById('export-proposal-btn').addEventListener('click', exportProposal);
-  if (DATA.__hasProposed) {
-    loadArbitration();
-    document.getElementById('export-proposal-btn').style.display = '';
-  }
   const reloadBtn = document.getElementById('reload-data-btn');
   if (window.__BAKED_DATA__) {
     reloadBtn.style.display = 'none';
