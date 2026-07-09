@@ -58,7 +58,7 @@
       border-radius: 3px;
     }
 
-    #reset-btn, #export-btn, #reload-data-btn, #fit-btn {
+    #reset-btn, #export-btn, #reload-data-btn, #fit-btn, #zoom-out-btn, #zoom-in-btn {
       background: #313244;
       color: #cdd6f4;
       border: 1px solid #45475a;
@@ -68,7 +68,8 @@
       font-size: 12px;
       white-space: nowrap;
     }
-    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover, #fit-btn:hover { background: #45475a; }
+    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover, #fit-btn:hover, #zoom-out-btn:hover, #zoom-in-btn:hover { background: #45475a; }
+    #zoom-out-btn, #zoom-in-btn { min-width: 30px; font-weight: 600; }
 
     /* View-mode segmented toggle (Conceptual | Logical) */
     #mode-toggle { display: inline-flex; border: 1px solid #45475a; border-radius: 6px; overflow: hidden; }
@@ -488,6 +489,8 @@
     <option value="proposed">Proposed only</option>
     <option value="defined">Defined only</option>
   </select>
+  <button id="zoom-out-btn" title="Zoom out">−</button>
+  <button id="zoom-in-btn" title="Zoom in">+</button>
   <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
@@ -2690,6 +2693,8 @@ function buildFrozenHTML(data) {
     <option value="proposed">Proposed only</option>
     <option value="defined">Defined only</option>
   </select>
+  <button id="zoom-out-btn" title="Zoom out">−</button>
+  <button id="zoom-in-btn" title="Zoom in">+</button>
   <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
@@ -2841,6 +2846,22 @@ function centerViewportOnNode(id) {
   panX = s.width / 2 - wx * zoomK;
   panY = s.height / 2 - wy * zoomK;
   applyViewport();
+}
+
+// Zoom by `factor` about the container-space point (mx,my), keeping that point
+// fixed under the cursor. Clamped to the same 0.12–3 range everywhere.
+function zoomAt(mx, my, factor) {
+  const wx = (mx - panX) / zoomK, wy = (my - panY) / zoomK;
+  zoomK = Math.max(0.12, Math.min(3, zoomK * factor));
+  panX = mx - wx * zoomK; panY = my - wy * zoomK;
+  applyViewport();
+}
+
+// Manual zoom step — anchored on the CENTER of the visible diagram area
+// (not the cursor). Used by the − / + header buttons and the +/- keys.
+function zoomStep(factor) {
+  const s = document.getElementById('diagram').getBoundingClientRect();
+  zoomAt(s.width / 2, s.height / 2, factor);
 }
 
 function isPanGesture(ev) { return spaceDown || ev.button === 2; }
@@ -3002,11 +3023,14 @@ function onWheel(ev) {
   const s = svg.getBoundingClientRect();
   if (ev.ctrlKey || ev.metaKey) {                    // ctrl/⌘ + wheel → zoom at cursor
     const mx = ev.clientX - s.left, my = ev.clientY - s.top;
-    const wx = (mx - panX) / zoomK, wy = (my - panY) / zoomK;
-    const f = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
-    zoomK = Math.max(0.12, Math.min(3, zoomK * f));
-    panX = mx - wx * zoomK; panY = my - wy * zoomK;
-    applyViewport();
+    // Delta-PROPORTIONAL zoom: scale exponentially by the actual delta magnitude
+    // so a gesture that fires many small events (trackpad pinch, high-res wheels)
+    // does not compound a fixed per-event factor into a zoom explosion. deltaMode
+    // is normalized to pixels the same way the pan path below does. S is tuned so
+    // a mouse notch (deltaY≈100) ≈ +15%/step and a full pinch spans ≈ 2–4×.
+    const u = ev.deltaMode === 1 ? 16 : (ev.deltaMode === 2 ? s.height : 1);
+    const S = 0.0014;
+    zoomAt(mx, my, Math.exp(-ev.deltaY * u * S));
     return;
   }
   // deltaMode: 0=pixels, 1=lines, 2=pages → normalize to pixels.
@@ -3071,11 +3095,13 @@ function initViewport() {
     clearFocus();
   });
 
-  // Space = hand tool, but never when typing in the sidebar search.
+  // Space = hand tool; +/- = zoom step. Never while typing in an input.
   window.addEventListener('keydown', ev => {
-    if (ev.code !== 'Space') return;
     const el = document.activeElement;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
+    if (ev.key === '+' || ev.key === '=') { zoomStep(1.25); ev.preventDefault(); return; }
+    if (ev.key === '-' || ev.key === '_') { zoomStep(0.8); ev.preventDefault(); return; }
+    if (ev.code !== 'Space') return;
     if (!spaceDown) { spaceDown = true; svg.classList.add('grab'); }
     ev.preventDefault();
   });
@@ -3119,6 +3145,8 @@ async function init() {
   document.getElementById('fit-btn').addEventListener('click', fitView);
   document.getElementById('mode-conceptual').addEventListener('click', () => switchViewMode('conceptual'));
   document.getElementById('mode-logical').addEventListener('click', () => switchViewMode('logical'));
+  document.getElementById('zoom-in-btn').addEventListener('click', () => zoomStep(1.25));
+  document.getElementById('zoom-out-btn').addEventListener('click', () => zoomStep(0.8));
   document.getElementById('sidebar-search').addEventListener('input', (e) => {
     sidebarSearch = e.target.value.trim().toLowerCase();
     renderSidebar();               // sidebar-only filter — the diagram is untouched
