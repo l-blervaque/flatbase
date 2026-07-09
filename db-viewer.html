@@ -223,7 +223,10 @@
     .node.dim, .edge.dim { opacity: 0.15; pointer-events: none; }
     .node.hi rect { stroke-width: 2.6; }
     .edge.hi { opacity: 1; }
-    .edge.hi > path:not(.hit-path) { stroke-width: 2.4; }
+    .edge.hi > path.edge-line { stroke-width: 2.4; }
+    /* Crow's-foot cardinality marks: never interactive, never dashed (a dashed
+       fork reads as broken), and excluded from the focus stroke-width bump. */
+    .edge-marker { pointer-events: none; fill: none; stroke-dasharray: none; }
 
     /* Labels (type label + cardinality badge) are revealed only by directly hovering the edge
        or via a detail-pane pair/bundle highlight. Hovering a connected node does not reveal them. */
@@ -1054,6 +1057,91 @@ function cardinalityFor(edge) {
   }
 }
 
+// Crow's-foot end markers (always-visible cardinality syntax), separate from the
+// hover-only cardinalityFor() badge text. The fork ("many") sits at the FK-holding
+// entity; the tick ("one") at the referenced entity. has_many is emitted parent→child
+// (from = parent/one, to = child/many, the FK holder). extends / polymorphic keep their
+// arrowhead + dash treatment (null here); belongs_to is never drawn (filtered upstream).
+function endMarkersFor(edge) {
+  switch (edge.type) {
+    case 'has_many':     return { from: 'tick', to: 'fork' };
+    case 'has_one':      return { from: 'tick', to: 'tick' };
+    case 'many_to_many': return { from: 'fork', to: 'fork' };
+    default:             return null;
+  }
+}
+
+// Outward normal of the box side an anchor sits on (the direction the edge leaves).
+function outNormal(side) {
+  return side === 'right' ? [1, 0]
+    : side === 'left' ? [-1, 0]
+    : side === 'top' ? [0, -1]
+    : [0, 1];
+}
+
+// Crow's-foot depth: distance from the box edge to the fork apex (the 3-prong
+// convergence point that sits on the line). Tuned for the 190×72 nodes.
+const FORK_D = 11;
+
+// Stroked end-mark at an anchor. fork = 3 prongs on the box edge converging to an
+// apex FORK_D out along the line; tick = one short stroke perpendicular to the line.
+// n = outward normal of the side the edge leaves from; (px,py) = its perpendicular.
+function cardMark(x, y, side, kind) {
+  const n = outNormal(side), px = -n[1], py = n[0];
+  if (kind === 'fork') {
+    const S = 6, ax = x + n[0] * FORK_D, ay = y + n[1] * FORK_D;
+    return `M ${ax} ${ay} L ${x} ${y} M ${ax} ${ay} L ${x + px * S} ${y + py * S} M ${ax} ${ay} L ${x - px * S} ${y - py * S}`;
+  }
+  const T = 6, S = 6, cx = x + n[0] * T, cy = y + n[1] * T;
+  return `M ${cx + px * S} ${cy + py * S} L ${cx - px * S} ${cy - py * S}`;
+}
+
+// Where the visible line should end at a fork ("many") end: pulled FORK_D/2 out
+// along the normal so the fork's apex reads cleanly. Tick ends stay at the box.
+function lineEndPoint(x, y, side, many) {
+  if (!many) return { x, y };
+  const n = outNormal(side), d = FORK_D / 2;
+  return { x: x + n[0] * d, y: y + n[1] * d };
+}
+
+// A stroked end-marker path element — inherits the edge stroke colour, never dashed.
+function makeEdgeMarker(end, color) {
+  const m = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  m.setAttribute('class', 'edge-marker');
+  m.dataset.end = end;
+  m.setAttribute('fill', 'none');
+  m.setAttribute('stroke', color);
+  m.setAttribute('stroke-width', '1.5');
+  m.setAttribute('stroke-dasharray', 'none');
+  return m;
+}
+
+// Set the geometry of one edge group's paths in place from a pre-computed edgeGeometry.
+// Shared by renderEdges (initial) and redrawIncidentEdges (drag): the visible line is
+// trimmed at fork ends, the wide hit path stays full-length, and each crow's-foot marker
+// is repainted by class so a drag never stamps the edge path onto a marker.
+function applyEdgePaths(g, edge, geo) {
+  const { x1, y1, x2, y2, cx1, cy1, cx2, cy2, fromSide, toSide, isSelf } = geo;
+  const marks = isSelf ? null : endMarkersFor(edge);
+  let lineD = geo.d;
+  if (marks) {
+    const aMany = marks.from === 'fork', bMany = marks.to === 'fork';
+    if (aMany || bMany) {
+      const a = lineEndPoint(x1, y1, fromSide, aMany);
+      const b = lineEndPoint(x2, y2, toSide, bMany);
+      lineD = `M ${a.x} ${a.y} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${b.x} ${b.y}`;
+    }
+  }
+  const line = g.querySelector('path.edge-line');
+  if (line) line.setAttribute('d', lineD);
+  const hit = g.querySelector('path.hit-path');
+  if (hit) hit.setAttribute('d', geo.d);
+  const mFrom = g.querySelector('.edge-marker[data-end="from"]');
+  if (mFrom) mFrom.setAttribute('d', marks && marks.from ? cardMark(x1, y1, fromSide, marks.from) : '');
+  const mTo = g.querySelector('.edge-marker[data-end="to"]');
+  if (mTo) mTo.setAttribute('d', marks && marks.to ? cardMark(x2, y2, toSide, marks.to) : '');
+}
+
 function cardinalityLabelOffset(side, dist) {
   switch (side) {
     case 'right':  return { dx: dist,      dy: -4, anchor: 'start' };
@@ -1180,8 +1268,7 @@ function redrawIncidentEdges(id) {
   layer.querySelectorAll('.edge').forEach(g => {
     if (g.dataset.from !== id && g.dataset.to !== id) return;
     if (!g.__edge) return;
-    const geo = edgeGeometry(g.__edge);
-    g.querySelectorAll('path').forEach(p => p.setAttribute('d', geo.d));
+    applyEdgePaths(g, g.__edge, edgeGeometry(g.__edge));
   });
 }
 
@@ -1217,33 +1304,46 @@ function renderEdges(visibleIds) {
     hit.setAttribute('d', d);
     hit.setAttribute('class', 'hit-path');
     hit.setAttribute('stroke-width', '14');
+    // Proposed edges match the proposed-node treatment: violet (+ dash on the line).
+    const strokeColor = edge.proposed ? '#8b5cf6' : '#bbb';
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('class', 'edge-line');
     path.setAttribute('d', d);
     path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', '#bbb');
+    path.setAttribute('stroke', strokeColor);
     path.setAttribute('stroke-width', '1.5');
 
-    if (edge.type === 'extends') {
+    // Converted types (has_many / has_one / many_to_many) carry always-visible
+    // crow's-foot end marks instead of an SVG <marker> arrowhead (so proposed
+    // edges inherit violet naturally). extends / polymorphic keep their arrow + dash.
+    const marks = isSelf ? null : endMarkersFor(edge);
+    if (marks) {
+      // no marker-end: the crow's-feet below carry the cardinality
+    } else if (edge.type === 'extends') {
       path.setAttribute('stroke-dasharray', '6,3');
       path.setAttribute('marker-end', 'url(#arrow)');
-    } else if (edge.type === 'many_to_many') {
-      path.setAttribute('marker-end', 'url(#arrow)');
-      path.setAttribute('marker-start', 'url(#arrow-start)');
     } else if (edge.type === 'polymorphic') {
       path.setAttribute('stroke-dasharray', '2,3');
       path.setAttribute('marker-end', 'url(#arrow)');
     } else {
+      // self-referential converted types (marks suppressed) + any fallback keep an arrow
       path.setAttribute('marker-end', 'url(#arrow)');
     }
 
     if (edge.proposed) {
-      // Proposed edges match the proposed-node treatment: violet + dashed.
-      path.setAttribute('stroke', '#8b5cf6');
       path.setAttribute('stroke-dasharray', '5,3');
     }
 
     g.appendChild(path);
+    if (marks) {
+      // Crow's-foot marks: stroked end geometry, edge stroke colour, never dashed.
+      if (marks.from) g.appendChild(makeEdgeMarker('from', strokeColor));
+      if (marks.to)   g.appendChild(makeEdgeMarker('to', strokeColor));
+    }
     g.appendChild(hit); // last so the wide invisible stroke is on top for hit testing
+
+    // Trim the visible line at fork ends + paint the marks from the shared geometry.
+    applyEdgePaths(g, edge, geo);
 
     const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     if (isSelf) {
