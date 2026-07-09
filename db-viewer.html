@@ -58,7 +58,7 @@
       border-radius: 3px;
     }
 
-    #reset-btn, #export-btn, #reload-data-btn {
+    #reset-btn, #export-btn, #reload-data-btn, #fit-btn {
       background: #313244;
       color: #cdd6f4;
       border: 1px solid #45475a;
@@ -68,7 +68,7 @@
       font-size: 12px;
       white-space: nowrap;
     }
-    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover { background: #45475a; }
+    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover, #fit-btn:hover { background: #45475a; }
 
     #main {
       display: flex;
@@ -173,11 +173,19 @@
 
     #diagram-wrap {
       flex: 1;
-      overflow: auto;
+      overflow: hidden;              /* viewport <g> transform navigates — no scrollbars */
       background: #fafafa;
+      position: relative;
     }
 
-    #diagram { display: block; }
+    #diagram {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+    #diagram.grab { cursor: grab; }
+    #diagram.panning { cursor: grabbing; }
 
     /* SVG node styles */
     .node rect {
@@ -434,6 +442,7 @@
     <option value="proposed">Proposed only</option>
     <option value="defined">Defined only</option>
   </select>
+  <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
@@ -451,6 +460,10 @@
   <div id="diagram-wrap">
     <svg id="diagram">
       <defs id="svg-defs"></defs>
+      <g id="viewport">
+        <g id="edge-layer"></g>
+        <g id="node-layer"></g>
+      </g>
     </svg>
   </div>
   <aside id="detail-panel" class="closed">
@@ -469,7 +482,6 @@ let DOMAIN_COLORS = {};
 
 const NODE_W = 190;
 const NODE_H = 72;
-const PAD = 50;
 
 // Mutable state
 let hiddenNodes = new Set();
@@ -478,6 +490,12 @@ let hiddenDomains = new Set();
 let proposedFilter = 'all';
 let sidebarSearch = '';        // lowercase needle; filters the sidebar list only
 let highlightedNode = null;
+
+// Viewport (pan/zoom) state — the #viewport <g> carries translate + scale.
+let panX = 0, panY = 0, zoomK = 1;
+let spaceDown = false;         // hand-tool modifier (Space held)
+let panning = null;            // active pan gesture, or null
+let panMoved = false;          // set on pan-move → swallow the click it emits
 
 function tableTags(t) {
   return Array.isArray(t.tags)
@@ -825,8 +843,8 @@ function computeAnchors(fromPos, toPos) {
 }
 
 function renderNodes() {
-  const svg = document.getElementById('diagram');
-  svg.querySelectorAll('.node').forEach(el => el.remove());
+  const layer = document.getElementById('node-layer');
+  layer.textContent = '';
 
   for (const t of DATA.tables) {
     const pos = positions[t.id];
@@ -838,12 +856,15 @@ function renderNodes() {
 
     const isArbIgnored = !!(t.proposed && tableArb(t.id).ignore);
 
+    // Node is a translated group; all child geometry is LOCAL to the node's
+    // top-left (0,0), so drag (later package) is a transform-only update.
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.classList.add('node');
     if (isHidden) g.classList.add('hidden');
     if (isHighlighted) g.classList.add('highlighted');
     if (isArbIgnored) g.classList.add('arb-ignored');
     g.dataset.id = t.id;
+    g.setAttribute('transform', `translate(${pos.x},${pos.y})`);
 
     if (t.notes) {
       const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
@@ -852,8 +873,8 @@ function renderNodes() {
     }
 
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', pos.x);
-    rect.setAttribute('y', pos.y);
+    rect.setAttribute('x', 0);
+    rect.setAttribute('y', 0);
     rect.setAttribute('width', NODE_W);
     rect.setAttribute('height', NODE_H);
     rect.setAttribute('rx', 6);
@@ -868,8 +889,8 @@ function renderNodes() {
     g.appendChild(rect);
 
     const textEN = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    textEN.setAttribute('x', pos.x + 10);
-    textEN.setAttribute('y', pos.y + 20);
+    textEN.setAttribute('x', 10);
+    textEN.setAttribute('y', 20);
     textEN.setAttribute('font-size', '12');
     textEN.setAttribute('font-weight', '700');
     textEN.setAttribute('fill', '#1a1a2e');
@@ -877,16 +898,16 @@ function renderNodes() {
     g.appendChild(textEN);
 
     const textJA = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    textJA.setAttribute('x', pos.x + 10);
-    textJA.setAttribute('y', pos.y + 36);
+    textJA.setAttribute('x', 10);
+    textJA.setAttribute('y', 36);
     textJA.setAttribute('font-size', '10');
     textJA.setAttribute('fill', '#666');
     textJA.textContent = t.name_ja;
     g.appendChild(textJA);
 
     const badgeRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    badgeRect.setAttribute('x', pos.x + 10);
-    badgeRect.setAttribute('y', pos.y + 46);
+    badgeRect.setAttribute('x', 10);
+    badgeRect.setAttribute('y', 46);
     badgeRect.setAttribute('width', 70);
     badgeRect.setAttribute('height', 16);
     badgeRect.setAttribute('rx', 3);
@@ -894,8 +915,8 @@ function renderNodes() {
     g.appendChild(badgeRect);
 
     const badgeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    badgeText.setAttribute('x', pos.x + 45);
-    badgeText.setAttribute('y', pos.y + 58);
+    badgeText.setAttribute('x', 45);
+    badgeText.setAttribute('y', 58);
     badgeText.setAttribute('font-size', '9');
     badgeText.setAttribute('font-weight', '600');
     badgeText.setAttribute('text-anchor', 'middle');
@@ -906,8 +927,8 @@ function renderNodes() {
     const nodeTags = tableTags(t);
     if (nodeTags.length && !t.proposed) {
       const tg = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      tg.setAttribute('x', pos.x + NODE_W - 8);
-      tg.setAttribute('y', pos.y + 58);
+      tg.setAttribute('x', NODE_W - 8);
+      tg.setAttribute('y', 58);
       tg.setAttribute('font-size', '9');
       tg.setAttribute('text-anchor', 'end');
       tg.setAttribute('fill', '#718096');
@@ -919,19 +940,22 @@ function renderNodes() {
     if (t.proposed) {
       const pl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       // Right of the type badge (x+10..x+80); tags are skipped on proposed nodes to avoid overlap.
-      pl.setAttribute('x', pos.x + 86);
-      pl.setAttribute('y', pos.y + 58);
+      pl.setAttribute('x', 86);
+      pl.setAttribute('y', 58);
       pl.setAttribute('font-size', '9');
       pl.setAttribute('fill', '#5b21b6');
       pl.textContent = isArbIgnored ? 'ignored' : 'proposed';
       g.appendChild(pl);
     }
 
-    g.addEventListener('click', () => openDetailPanel(t.id));
+    // Diagram node-click opens the panel but does NOT recenter (the user is
+    // already looking at the node). A pan gesture (space/right-drag) that emits
+    // a click is swallowed by the capture-phase guard in initViewport().
+    g.addEventListener('click', () => { if (spaceDown) return; openDetailPanel(t.id); });
     g.addEventListener('mouseenter', () => setHoveredNode(t.id));
     g.addEventListener('mouseleave', () => setHoveredNode(null));
 
-    svg.appendChild(g);
+    layer.appendChild(g);
   }
 }
 
@@ -1078,8 +1102,8 @@ function collectEdges() {
 }
 
 function renderEdges(visibleIds) {
-  const svg = document.getElementById('diagram');
-  svg.querySelectorAll('.edge').forEach(el => el.remove());
+  const layer = document.getElementById('edge-layer');
+  layer.textContent = '';
 
   const visible = new Set(visibleIds);
   const edges = collectEdges();
@@ -1195,8 +1219,9 @@ function renderEdges(visibleIds) {
       }
     }
 
-    const firstNode = svg.querySelector('.node');
-    svg.insertBefore(g, firstNode);
+    // Z-order is structural: edge-layer sits before node-layer in the DOM, so
+    // edges always render under nodes — just append.
+    layer.appendChild(g);
   }
 }
 
@@ -1278,9 +1303,10 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function openDetailPanel(id) {
+function openDetailPanel(id, opts) {
   const table = DATA.tables.find(t => t.id === id);
   if (!table) return;
+  const center = !!(opts && opts.center);   // recenter ONLY on intentional navigation
   openPanelId = id;
   highlightedNode = id;
 
@@ -1534,7 +1560,7 @@ function openDetailPanel(id) {
   body.querySelectorAll('.navigable[data-target]').forEach(el => {
     const tgt = el.dataset.target;
     if (!tableById[tgt]) return;
-    el.addEventListener('click', e => { e.stopPropagation(); openDetailPanel(tgt); });
+    el.addEventListener('click', e => { e.stopPropagation(); openDetailPanel(tgt, { center: true }); });
     el.addEventListener('mouseenter', () => setHoveredNode(tgt, 'detail', id));
     el.addEventListener('mouseleave', () => setHoveredNode(null));
   });
@@ -1546,16 +1572,9 @@ function openDetailPanel(id) {
     el.addEventListener('mouseleave', () => setHoveredNode(null));
   });
 
-  // Scroll the diagram to bring the table into view (matches previous highlight behavior)
-  const pos = positions[id];
-  if (pos) {
-    const wrap = document.getElementById('diagram-wrap');
-    wrap.scrollTo({
-      left: Math.max(0, pos.x - wrap.clientWidth / 2 + NODE_W / 2),
-      top: Math.max(0, pos.y - wrap.clientHeight / 2 + NODE_H / 2),
-      behavior: 'smooth',
-    });
-  }
+  // Pan-to-center the table ONLY when navigation is intentional (sidebar / FK
+  // click). Same-id refreshes (arbitration buttons, hide toggle) never recenter.
+  if (center) centerViewportOnNode(id);
 
   render();
   setHoveredNode(null); // re-applies focus emphasis to the newly selected node
@@ -1664,7 +1683,7 @@ function renderSidebar() {
         toggleNodeVisibility(t.id);
       });
 
-      row.querySelector('.row-body').addEventListener('click', () => openDetailPanel(t.id));
+      row.querySelector('.row-body').addEventListener('click', () => openDetailPanel(t.id, { center: true }));
       row.addEventListener('mouseenter', () => setHoveredNode(t.id));
       row.addEventListener('mouseleave', () => setHoveredNode(null));
       nav.appendChild(row);
@@ -1763,6 +1782,7 @@ function resetState() {
   computePositions();
   saveLayout();
   closeDetailPanel();
+  fitView();
 }
 
 function setHoveredNode(id, source, pairWith) {
@@ -2163,6 +2183,7 @@ function buildFrozenHTML(data) {
     <option value="proposed">Proposed only</option>
     <option value="defined">Defined only</option>
   </select>
+  <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
@@ -2180,6 +2201,10 @@ function buildFrozenHTML(data) {
   <div id="diagram-wrap">
     <svg id="diagram">
       <defs id="svg-defs"></defs>
+      <g id="viewport">
+        <g id="edge-layer"></g>
+        <g id="node-layer"></g>
+      </g>
     </svg>
   </div>
   <aside id="detail-panel" class="closed">
@@ -2248,6 +2273,136 @@ function clearCachedData() {
   location.reload();
 }
 
+// ---- viewport: pan / zoom / fit ----
+function applyViewport() {
+  const vp = document.getElementById('viewport');
+  if (vp) vp.setAttribute('transform', `translate(${panX},${panY}) scale(${zoomK})`);
+}
+
+// Screen (client) point → world coordinates under the current transform.
+function screenToWorld(clientX, clientY) {
+  const s = document.getElementById('diagram').getBoundingClientRect();
+  return { x: (clientX - s.left - panX) / zoomK, y: (clientY - s.top - panY) / zoomK };
+}
+
+// Bounding box (world coords) of the currently visible nodes.
+function visibleBBox() {
+  let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+  const hiddenSet = new Set(getVisibleIds());
+  for (const t of DATA.tables) {
+    if (!hiddenSet.has(t.id)) continue;
+    const p = positions[t.id];
+    if (!p) continue;
+    a = Math.min(a, p.x); b = Math.min(b, p.y);
+    c = Math.max(c, p.x + NODE_W); d = Math.max(d, p.y + NODE_H);
+  }
+  if (!isFinite(a)) return null;
+  return { a, b, c, d };
+}
+
+// Fit the visible graph into the container, clearing pan/zoom to a framed view.
+function fitView() {
+  const svg = document.getElementById('diagram');
+  const s = svg.getBoundingClientRect();
+  const box = visibleBBox();
+  if (!box) return;
+  const w = box.c - box.a, h = box.d - box.b;
+  if (w <= 0 || !isFinite(w)) return;
+  zoomK = Math.max(0.12, Math.min(s.width / (w + 120), s.height / (h + 120), 1.4));
+  panX = (s.width - w * zoomK) / 2 - box.a * zoomK;
+  panY = (s.height - h * zoomK) / 2 - box.b * zoomK;
+  applyViewport();
+}
+
+// Pan so a node's center sits at the container center, keeping the current zoom.
+// Called only on intentional navigation (sidebar / FK click).
+function centerViewportOnNode(id) {
+  const p = positions[id];
+  if (!p) return;
+  const s = document.getElementById('diagram').getBoundingClientRect();
+  const wx = p.x + NODE_W / 2, wy = p.y + NODE_H / 2;
+  panX = s.width / 2 - wx * zoomK;
+  panY = s.height / 2 - wy * zoomK;
+  applyViewport();
+}
+
+function isPanGesture(ev) { return spaceDown || ev.button === 2; }
+
+function onWheel(ev) {
+  ev.preventDefault();
+  const svg = document.getElementById('diagram');
+  const s = svg.getBoundingClientRect();
+  if (ev.ctrlKey || ev.metaKey) {                    // ctrl/⌘ + wheel → zoom at cursor
+    const mx = ev.clientX - s.left, my = ev.clientY - s.top;
+    const wx = (mx - panX) / zoomK, wy = (my - panY) / zoomK;
+    const f = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+    zoomK = Math.max(0.12, Math.min(3, zoomK * f));
+    panX = mx - wx * zoomK; panY = my - wy * zoomK;
+    applyViewport();
+    return;
+  }
+  // deltaMode: 0=pixels, 1=lines, 2=pages → normalize to pixels.
+  const u = ev.deltaMode === 1 ? 16 : (ev.deltaMode === 2 ? s.height : 1);
+  const dx = ev.deltaX * u, dy = ev.deltaY * u;
+  if (ev.shiftKey) panX -= (dx || dy);               // shift → horizontal
+  else { panX -= dx; panY -= dy; }                   // wheel → 2D pan
+  applyViewport();
+}
+
+function initViewport() {
+  const svg = document.getElementById('diagram');
+
+  svg.addEventListener('wheel', onWheel, { passive: false });
+
+  // Right-drag / Space-drag = hand tool. contextmenu suppressed on the diagram only.
+  svg.addEventListener('contextmenu', ev => ev.preventDefault());
+
+  svg.addEventListener('pointerdown', ev => {
+    panMoved = false;                 // reset on ANY pointerdown so a stale flag
+                                      // from a prior right-drag can't swallow the next click
+    if (!isPanGesture(ev)) return;
+    ev.preventDefault();
+    panning = { x: ev.clientX, y: ev.clientY, px: panX, py: panY };
+    svg.classList.add('panning');
+    try { svg.setPointerCapture(ev.pointerId); } catch {}
+  });
+  svg.addEventListener('pointermove', ev => {
+    if (!panning) return;
+    if (Math.abs(ev.clientX - panning.x) + Math.abs(ev.clientY - panning.y) > 4) panMoved = true;
+    panX = panning.px + (ev.clientX - panning.x);
+    panY = panning.py + (ev.clientY - panning.y);
+    applyViewport();
+  });
+  const endPan = () => {
+    if (!panning) return;
+    panning = null;
+    svg.classList.remove('panning');
+    if (spaceDown) svg.classList.add('grab');
+  };
+  svg.addEventListener('pointerup', endPan);
+  svg.addEventListener('pointercancel', endPan);
+
+  // Swallow the click a pan gesture emits (capture phase, before node handlers).
+  svg.addEventListener('click', ev => {
+    if (panMoved) { ev.stopPropagation(); ev.preventDefault(); panMoved = false; }
+  }, true);
+
+  // Space = hand tool, but never when typing in the sidebar search.
+  window.addEventListener('keydown', ev => {
+    if (ev.code !== 'Space') return;
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
+    if (!spaceDown) { spaceDown = true; svg.classList.add('grab'); }
+    ev.preventDefault();
+  });
+  window.addEventListener('keyup', ev => {
+    if (ev.code !== 'Space') return;
+    spaceDown = false;
+    svg.classList.remove('grab');
+    if (!panning) svg.classList.remove('panning');
+  });
+}
+
 async function init() {
   DATA = await loadData();
   DOMAIN_ORDER = DATA.domains.map(d => d.id);
@@ -2264,8 +2419,11 @@ async function init() {
   setupDefs();
   applyLayout();
   render();
+  initViewport();
+  fitView();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
+  document.getElementById('fit-btn').addEventListener('click', fitView);
   document.getElementById('sidebar-search').addEventListener('input', (e) => {
     sidebarSearch = e.target.value.trim().toLowerCase();
     renderSidebar();               // sidebar-only filter — the diagram is untouched
