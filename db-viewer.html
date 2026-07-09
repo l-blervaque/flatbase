@@ -495,7 +495,9 @@ let highlightedNode = null;
 let panX = 0, panY = 0, zoomK = 1;
 let spaceDown = false;         // hand-tool modifier (Space held)
 let panning = null;            // active pan gesture, or null
-let panMoved = false;          // set on pan-move → swallow the click it emits
+let panMoved = false;          // set on pan-move / drag-move → swallow the click it emits
+let dragNode = null;           // active node-drag gesture, or null
+let dragRAF = null;            // rAF handle throttling the drag redraw
 
 function tableTags(t) {
   return Array.isArray(t.tags)
@@ -948,9 +950,11 @@ function renderNodes() {
       g.appendChild(pl);
     }
 
-    // Diagram node-click opens the panel but does NOT recenter (the user is
-    // already looking at the node). A pan gesture (space/right-drag) that emits
-    // a click is swallowed by the capture-phase guard in initViewport().
+    // Left-drag repositions the node; a plain click (no 4px movement) opens the
+    // detail panel without recentering (the user is already looking at it). A pan
+    // gesture (space/right-drag) or a drag that emits a click is swallowed by the
+    // capture-phase guard in initViewport().
+    g.addEventListener('pointerdown', (ev) => startNodeDrag(ev, t.id));
     g.addEventListener('click', () => { if (spaceDown) return; openDetailPanel(t.id); });
     g.addEventListener('mouseenter', () => setHoveredNode(t.id));
     g.addEventListener('mouseleave', () => setHoveredNode(null));
@@ -1101,6 +1105,64 @@ function collectEdges() {
   return edges;
 }
 
+// Pure geometry of one edge from the current node positions. Extracted so a
+// node drag can recompute only its incident edges (transform-only redraw)
+// without a full renderEdges() pass.
+function edgeGeometry(edge) {
+  const fromPos = positions[edge.from];
+  const toPos = positions[edge.to];
+  const isSelf = edge.from === edge.to;
+
+  let x1, y1, x2, y2, cx1, cy1, cx2, cy2;
+  let fromSide = null, toSide = null;
+  const CTL = 60;
+  if (isSelf) {
+    // Self-relation: draw a small loop bulging out to the right of the node.
+    const right = fromPos.x + NODE_W;
+    const yTop = fromPos.y + NODE_H * 0.3;
+    const yBot = fromPos.y + NODE_H * 0.7;
+    x1 = right; y1 = yTop;
+    x2 = right; y2 = yBot;
+    const LOOP_OUT = 70;
+    const LOOP_FLARE = 30;
+    cx1 = right + LOOP_OUT; cy1 = yTop - LOOP_FLARE;
+    cx2 = right + LOOP_OUT; cy2 = yBot + LOOP_FLARE;
+    fromSide = 'right'; toSide = 'right';
+  } else {
+    const { from: a, to: b } = computeAnchors(fromPos, toPos);
+    x1 = a.x; y1 = a.y;
+    x2 = b.x; y2 = b.y;
+    fromSide = a.side; toSide = b.side;
+
+    cx1 = x1; cy1 = y1; cx2 = x2; cy2 = y2;
+    if (a.side === 'right')  cx1 = x1 + CTL;
+    if (a.side === 'left')   cx1 = x1 - CTL;
+    if (a.side === 'top')    cy1 = y1 - CTL;
+    if (a.side === 'bottom') cy1 = y1 + CTL;
+    if (b.side === 'right')  cx2 = x2 + CTL;
+    if (b.side === 'left')   cx2 = x2 - CTL;
+    if (b.side === 'top')    cy2 = y2 - CTL;
+    if (b.side === 'bottom') cy2 = y2 + CTL;
+  }
+
+  const d = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+  return { d, x1, y1, x2, y2, cx1, cy1, cx2, cy2, fromSide, toSide, isSelf };
+}
+
+// Recompute the path `d` of every edge incident to `id` in place — used mid-drag
+// so the node moves with its edges without a full render(). Labels/cardinality
+// badges (hover-only, positioned) are left stale until the drop full-render.
+function redrawIncidentEdges(id) {
+  const layer = document.getElementById('edge-layer');
+  if (!layer) return;
+  layer.querySelectorAll('.edge').forEach(g => {
+    if (g.dataset.from !== id && g.dataset.to !== id) return;
+    if (!g.__edge) return;
+    const geo = edgeGeometry(g.__edge);
+    g.querySelectorAll('path').forEach(p => p.setAttribute('d', geo.d));
+  });
+}
+
 function renderEdges(visibleIds) {
   const layer = document.getElementById('edge-layer');
   layer.textContent = '';
@@ -1118,49 +1180,17 @@ function renderEdges(visibleIds) {
       (edge.via && edge.viaTable && colArb(edge.viaTable, edge.via).ignore) ||
       tableIgnored(edge.from) || tableIgnored(edge.to);
 
-    const fromPos = positions[edge.from];
-    const toPos = positions[edge.to];
-    const isSelf = edge.from === edge.to;
-
-    let x1, y1, x2, y2, cx1, cy1, cx2, cy2;
-    let fromSide = null, toSide = null;
-    const CTL = 60;
-    if (isSelf) {
-      // Self-relation: draw a small loop bulging out to the right of the node.
-      const right = fromPos.x + NODE_W;
-      const yTop = fromPos.y + NODE_H * 0.3;
-      const yBot = fromPos.y + NODE_H * 0.7;
-      x1 = right; y1 = yTop;
-      x2 = right; y2 = yBot;
-      const LOOP_OUT = 70;
-      const LOOP_FLARE = 30;
-      cx1 = right + LOOP_OUT; cy1 = yTop - LOOP_FLARE;
-      cx2 = right + LOOP_OUT; cy2 = yBot + LOOP_FLARE;
-      fromSide = 'right'; toSide = 'right';
-    } else {
-      const { from: a, to: b } = computeAnchors(fromPos, toPos);
-      x1 = a.x; y1 = a.y;
-      x2 = b.x; y2 = b.y;
-      fromSide = a.side; toSide = b.side;
-
-      cx1 = x1; cy1 = y1; cx2 = x2; cy2 = y2;
-      if (a.side === 'right')  cx1 = x1 + CTL;
-      if (a.side === 'left')   cx1 = x1 - CTL;
-      if (a.side === 'top')    cy1 = y1 - CTL;
-      if (a.side === 'bottom') cy1 = y1 + CTL;
-      if (b.side === 'right')  cx2 = x2 + CTL;
-      if (b.side === 'left')   cx2 = x2 - CTL;
-      if (b.side === 'top')    cy2 = y2 - CTL;
-      if (b.side === 'bottom') cy2 = y2 + CTL;
-    }
+    const geo = edgeGeometry(edge);
+    const { x1, y1, x2, y2, cx1, cx2, fromSide, toSide, isSelf } = geo;
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.classList.add('edge');
     g.dataset.from = edge.from;
     g.dataset.to = edge.to;
+    g.__edge = edge;            // edge index: element → edge (for incident redraw)
     if (!bothVisible || arbSuppressed) g.classList.add('hidden');
 
-    const d = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+    const d = geo.d;
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     hit.setAttribute('d', d);
     hit.setAttribute('class', 'hit-path');
@@ -2328,6 +2358,61 @@ function centerViewportOnNode(id) {
 
 function isPanGesture(ev) { return spaceDown || ev.button === 2; }
 
+// ---- node drag ----
+// A left-button pointerdown on a node starts a *potential* drag. Movement past a
+// 4px threshold promotes it to a real drag: from then on we only rewrite the
+// node group's transform + its incident edge paths (rAF-throttled), never a full
+// render. The drop does one full render() + saveLayout(). panMoved is shared with
+// the pan gesture so the capture-phase click guard swallows the drag's click —
+// a dragged node must NOT open the detail panel.
+function startNodeDrag(ev, id) {
+  if (isPanGesture(ev)) return;      // hand-tool: let the pan handler on the SVG take it
+  if (ev.button !== 0) return;       // left button only
+  if (!positions[id]) return;
+  ev.stopPropagation();              // pre-empt the SVG pointerdown (pan) for this gesture
+  panMoved = false;                  // fresh gesture — clear any stale flag
+  const w = screenToWorld(ev.clientX, ev.clientY);
+  dragNode = { id, dx: w.x - positions[id].x, dy: w.y - positions[id].y,
+               sx: ev.clientX, sy: ev.clientY, moved: false, pointerId: ev.pointerId };
+}
+
+// Called from the SVG pointermove handler while a node drag is live.
+function onNodeDragMove(ev) {
+  if (Math.abs(ev.clientX - dragNode.sx) + Math.abs(ev.clientY - dragNode.sy) > 4) {
+    if (!dragNode.moved) {
+      dragNode.moved = true;
+      // Capture lazily — only once the drag is real — so a plain click never
+      // retargets and still dispatches to the node handler.
+      try { document.getElementById('diagram').setPointerCapture(dragNode.pointerId); } catch {}
+    }
+    panMoved = true;                 // swallow the click this gesture will emit
+  }
+  const w = screenToWorld(ev.clientX, ev.clientY);
+  positions[dragNode.id].x = w.x - dragNode.dx;
+  positions[dragNode.id].y = w.y - dragNode.dy;
+  if (dragRAF) return;
+  dragRAF = requestAnimationFrame(() => {
+    dragRAF = null;
+    if (!dragNode) return;
+    const g = document.querySelector(`#node-layer .node[data-id="${cssEscape(dragNode.id)}"]`);
+    if (g) g.setAttribute('transform', `translate(${positions[dragNode.id].x},${positions[dragNode.id].y})`);
+    redrawIncidentEdges(dragNode.id);
+  });
+}
+
+// Called from the SVG pointerup/pointercancel handler to finish a node drag.
+function endNodeDrag() {
+  if (dragRAF) { cancelAnimationFrame(dragRAF); dragRAF = null; }
+  const moved = dragNode.moved;
+  try { document.getElementById('diagram').releasePointerCapture(dragNode.pointerId); } catch {}
+  dragNode = null;
+  if (moved) { render(); saveLayout(); }   // persist the manual arrangement
+}
+
+function cssEscape(s) {
+  return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
+}
+
 function onWheel(ev) {
   ev.preventDefault();
   const svg = document.getElementById('diagram');
@@ -2367,22 +2452,24 @@ function initViewport() {
     try { svg.setPointerCapture(ev.pointerId); } catch {}
   });
   svg.addEventListener('pointermove', ev => {
+    if (dragNode) { onNodeDragMove(ev); return; }   // node drag takes priority over pan
     if (!panning) return;
     if (Math.abs(ev.clientX - panning.x) + Math.abs(ev.clientY - panning.y) > 4) panMoved = true;
     panX = panning.px + (ev.clientX - panning.x);
     panY = panning.py + (ev.clientY - panning.y);
     applyViewport();
   });
-  const endPan = () => {
+  const endGesture = () => {
+    if (dragNode) endNodeDrag();
     if (!panning) return;
     panning = null;
     svg.classList.remove('panning');
     if (spaceDown) svg.classList.add('grab');
   };
-  svg.addEventListener('pointerup', endPan);
-  svg.addEventListener('pointercancel', endPan);
+  svg.addEventListener('pointerup', endGesture);
+  svg.addEventListener('pointercancel', endGesture);
 
-  // Swallow the click a pan gesture emits (capture phase, before node handlers).
+  // Swallow the click a pan/drag gesture emits (capture phase, before node handlers).
   svg.addEventListener('click', ev => {
     if (panMoved) { ev.stopPropagation(); ev.preventDefault(); panMoved = false; }
   }, true);
