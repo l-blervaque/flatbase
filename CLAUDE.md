@@ -30,21 +30,28 @@ Inside the HTML:
 - `DATA` is `null` at script start and populated by `init()`. **Loading model**: the viewer runs on `file://` (no server), so it cannot `fetch()` the JSON. Instead, the (already-normalized) JSON is cached in **`localStorage`** under key `flatbase.tables.json`. On first run (or after a manual reset), `pickFile()` shows a drag-drop overlay accepting either a single `tables.json` or a `schema/` folder (multi-file layout, walked via `webkitGetAsEntry`). `normalizeData()` bundles + derives relations (from `columns[].fk` / `polymorphic`) and the result is stashed in `localStorage`.
 - The header **`↻ Data`** button clears the cache and triggers the picker again — use it when `tables.json` on disk has changed.
 - Domain ordering and colors come from `DATA.domains` (an ordered list of `{id, color}`).
-- **Layout** — force-directed graph: pairwise repulsion + spring edges + center pull, run for a fixed number of iterations at load (`computePositions`, ~line 858). Positions are static after load.
-- **Render pipeline** — `render()` clears the SVG, then draws visible edges then visible nodes. Called on any state change.
-- **State** (in-memory only, resets on reload):
-  - `hiddenNodes: Set<id>`
+- **Layout** — Fruchterman-Reingold hub-and-spoke "stars": FR repulsion/attraction with the highest-degree node pinned at origin, temperature annealing, then overlap resolution + component packing + isolated-node parking (`computePositions`). **Deterministic** — a seeded RNG (mulberry32, reset before layout) covers every jitter path, so two loads produce identical positions. Positions are **persisted** to `localStorage` under `flatbase.layout.<meta.project>.<schema-signature>` (the signature is a hash of the sorted table ids, so adding/removing tables invalidates a stale layout). `applyLayout()` loads a saved map if it covers every current node id, else recomputes and saves. Node drag rewrites positions and re-saves. `↻ Data` and Reset both clear the saved layout (Reset then recomputes and re-fits). Positions are **world** coordinates centered at origin; screen placement is done by the viewport transform + Fit (there is no `setSVGSize`).
+- **Render pipeline** — `render()` clears the SVG and rebuilds `<g id="viewport"><g id="edge-layer">…</g><g id="node-layer">…</g></g>` (visible edges then visible nodes); listeners re-attach per render. Called on any state change. Node drag is the exception — it rewrites only the dragged node's transform + its incident edge paths (rAF-throttled), full `render()` on drop.
+- **State** (in-memory, resets on reload unless noted):
+  - `hiddenNodes: Set<id>`, `cascadeHiddenNodes: Set<id>`
   - `hiddenDomains: Set<domain>`
-  - `highlightedNode: id | null`
   - `proposedFilter: 'all' | 'proposed' | 'defined'`
-  - Exception: `arbitration` (proposal-mode decisions) is the one deliberately *persisted* state — `localStorage` key `flatbase.arbitration.<meta.project>`, cleared by `↻ Data`.
+  - `sidebarSearch: string`, `highlightedNode: id | null`
+  - `focusedNode: id | null`, `focusedEdge: {from,to} | null` (click-focus dim state)
+  - `panX, panY, zoomK` (viewport transform); `spaceDown`, `panning`, `dragNode` (active gestures)
+  - **Persisted exceptions** (survive reload, both cleared by `↻ Data`): `arbitration` (proposal-mode decisions) under `flatbase.arbitration.<meta.project>`, and **layout positions** under `flatbase.layout.<meta.project>.<schema-signature>`.
 - **Interactions**:
   - Domain checkbox → toggles all tables in that domain + their edges.
-  - Node click → hides node, then cascade-hides any node no longer connected to the main component.
-  - Sidebar click → highlights node + scrolls SVG to it.
-  - Reset → restores all state.
+  - Node click → **focus**: dims everything outside the node's neighborhood (`.dim`) and opens the detail panel. (No cascade-hide on click.)
+  - Edge click → focus its two endpoints + itself (wide transparent hit path per edge).
+  - Node drag → repositions the node (persisted to the layout key); a 4px threshold separates click from drag so a drag never opens the panel.
+  - Hiding a table → sidebar **eye toggle** or the detail-pane **Hide** button; both keep the cascade-hide of nodes left disconnected from the main component.
+  - Sidebar row click → focus the node + pan-to-center it via the viewport (no container scroll). FK badge click navigates + recenters likewise.
+  - Background click or **Escape** → clears focus (Escape also closes an open panel).
+  - Pan/zoom: wheel = 2D pan (shift = horizontal), ctrl/⌘+wheel = zoom at cursor, Space-hold or right-drag = hand tool, **Fit** button frames the visible graph.
+  - Reset → restores all in-memory state, clears focus, recomputes + re-saves the layout, and Fits.
 
-Node visuals encode domain (fill color), type (badge), `modeled` status (solid vs dashed border — no textual label), and free-form `tags` (gray `#tag` chips/labels). Edge visuals encode relation type (see `docs/superpowers/specs/2026-05-12-db-viewer-design.md` for the full mapping).
+Node visuals encode domain (fill color), type (badge), `modeled` status (solid vs dashed border — no textual label), and free-form `tags` (gray `#tag` chips/labels). Edge visuals encode relation type via **crow's-foot** end marks — fork = "many", tick = "one" — on `has_many` (tick at parent, fork at child), `has_one` (tick/tick) and `many_to_many` (fork/fork); `extends` and `polymorphic` keep their dashed/dotted arrows; `belongs_to` is never drawn (see `docs/FORMAT.md` § Edge rendering and `docs/superpowers/plans/2026-07-09-graph-interaction.md`).
 
 ## Running / developing
 
@@ -63,7 +70,7 @@ Then open `db-viewer.html` in a browser. Edit the HTML or `tables.json`, reload.
 - **Schema shape** — see `docs/FORMAT.md`. Quick summary: `{ meta, domains?: [{id, color}], enums?, tables: [{id, name, name_ja?, domain, type, status? | modeled?, tags?: [string], notes?, columns?: [...], relations?: [...] }] }`. `domains` is optional (auto-derived from tables in insertion order + default palette). `relations` is optional — derived from `columns[].fk` and `columns[].polymorphic` when omitted.
 - **Relation types**: `belongs_to`, `has_one`, `has_many`, `many_to_many`, `extends`, `polymorphic` (uses `targets: [...]` instead of `target`; `"*"` means all tables).
 - **Columns** (optional, per table) — rendered in the detail panel when present. Each entry is either a plain string (just the name) or an object: `{ name, type?, nullable?, pk?, fk?, unique?, enum_ref?, polymorphic?, notes? }`. `fk` is either a string (`"other_table_id"`) or an object (`{ table, column?, on_delete? }`); both produce a clickable badge that navigates to the target table.
-- **Out of scope** for the viewer (per design spec): zoom/pan, drag-to-reposition, persistence, editing the data, filtering by type/modeled. Push back if asked to add these without context. **Exception — proposal-arbitration mode**: the proposed filter, per-element arbitration (ignore / type overrule) and its localStorage persistence are in scope by design (see `docs/FORMAT.md` § Arbitration).
+- **Out of scope** for the viewer: editing the data (the schema is read-only; arbitration decisions are the only exception), filtering by type/modeled. Push back if asked to add these without context. **In scope by design** (revised 2026-07-09, see `docs/superpowers/plans/2026-07-09-graph-interaction.md`): zoom/pan, drag-to-reposition, and layout persistence — these were on the original spec's out-of-scope list but were adopted deliberately. **Exception — proposal-arbitration mode**: the proposed filter, per-element arbitration (ignore / type overrule) and its localStorage persistence are in scope by design (see `docs/FORMAT.md` § Arbitration).
 - **No literal `</script>` in the viewer's script body.** The whole viewer lives inside one inline `<script>` tag, so the HTML parser is in script-data state while scanning it. Any literal `<` + `/script>` byte sequence — even inside a JS comment or a template literal — ends the script tag prematurely and breaks the source viewer. Regex literals like `/<\/script>/gi` are safe (the `\` between `<` and `/` prevents the match). When the output of `buildFrozenHTML` needs to embed real closing-script tags, build them at runtime via `const SC = '</' + 'script>'` and interpolate `${SC}` into the template.
 
 ## Reference docs
