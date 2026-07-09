@@ -58,7 +58,7 @@
       border-radius: 3px;
     }
 
-    #reset-btn, #export-btn, #reload-data-btn {
+    #reset-btn, #export-btn, #reload-data-btn, #fit-btn {
       background: #313244;
       color: #cdd6f4;
       border: 1px solid #45475a;
@@ -68,7 +68,7 @@
       font-size: 12px;
       white-space: nowrap;
     }
-    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover { background: #45475a; }
+    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover, #fit-btn:hover { background: #45475a; }
 
     #main {
       display: flex;
@@ -173,11 +173,19 @@
 
     #diagram-wrap {
       flex: 1;
-      overflow: auto;
+      overflow: hidden;              /* viewport <g> transform navigates — no scrollbars */
       background: #fafafa;
+      position: relative;
     }
 
-    #diagram { display: block; }
+    #diagram {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+    #diagram.grab { cursor: grab; }
+    #diagram.panning { cursor: grabbing; }
 
     /* SVG node styles */
     .node rect {
@@ -206,6 +214,20 @@
     }
     .edge.hidden { display: none; }
 
+    /* Focus mode (persistent click state). .dim fades non-neighbours and drops
+       their pointer events; .hi emphasises the focused neighbourhood. Placed
+       AFTER .node.arb-ignored so dim (0.15) wins over ignored (0.35) when both
+       apply; a *neighbour* that is arb-ignored keeps .hi (stays at 0.35, still
+       recognisable). Proposed violet/dash is inline on the rect (stroke +
+       dasharray) so opacity dimming and the stroke-width bump never erase it. */
+    .node.dim, .edge.dim { opacity: 0.15; pointer-events: none; }
+    .node.hi rect { stroke-width: 2.6; }
+    .edge.hi { opacity: 1; }
+    .edge.hi > path.edge-line { stroke-width: 2.4; }
+    /* Crow's-foot cardinality marks: never interactive, never dashed (a dashed
+       fork reads as broken), and excluded from the focus stroke-width bump. */
+    .edge-marker { pointer-events: none; fill: none; stroke-dasharray: none; }
+
     /* Labels (type label + cardinality badge) are revealed only by directly hovering the edge
        or via a detail-pane pair/bundle highlight. Hovering a connected node does not reveal them. */
     .edge:hover text,
@@ -213,10 +235,11 @@
     .edge.is-pair text,
     .edge.is-pair .cardinality-bg { opacity: 1; }
 
-    /* When something is being hovered, dim everything by default */
-    body.hovering .edge { opacity: 0.12; }
-    body.hovering .edge.is-touching { opacity: 1; }
-    body.hovering .node:not(.is-touching-hover) rect { opacity: 0.45; }
+    /* When something is being hovered, dim everything by default. Suppressed
+       while focus mode is active — focus wins, its .dim/.hi governs instead. */
+    body:not(.focusing).hovering .edge { opacity: 0.12; }
+    body:not(.focusing).hovering .edge.is-touching { opacity: 1; }
+    body:not(.focusing).hovering .node:not(.is-touching-hover) rect { opacity: 0.45; }
 
     /* Hover originating from the detail pane: overlay an orange emphasis on the specific link(s),
        while the selected table's normal neighborhood highlight stays intact. */
@@ -434,6 +457,7 @@
     <option value="proposed">Proposed only</option>
     <option value="defined">Defined only</option>
   </select>
+  <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
@@ -451,6 +475,10 @@
   <div id="diagram-wrap">
     <svg id="diagram">
       <defs id="svg-defs"></defs>
+      <g id="viewport">
+        <g id="edge-layer"></g>
+        <g id="node-layer"></g>
+      </g>
     </svg>
   </div>
   <aside id="detail-panel" class="closed">
@@ -469,7 +497,6 @@ let DOMAIN_COLORS = {};
 
 const NODE_W = 190;
 const NODE_H = 72;
-const PAD = 50;
 
 // Mutable state
 let hiddenNodes = new Set();
@@ -478,6 +505,19 @@ let hiddenDomains = new Set();
 let proposedFilter = 'all';
 let sidebarSearch = '';        // lowercase needle; filters the sidebar list only
 let highlightedNode = null;
+
+// Focus mode (persistent click state) — distinct from the transient hover state
+// (setHoveredNode). A focused node dims everything but its neighbourhood.
+let focusedNode = null;        // id of the click-focused node, or null
+let focusedEdge = null;        // { from, to } of the click-focused edge, or null
+
+// Viewport (pan/zoom) state — the #viewport <g> carries translate + scale.
+let panX = 0, panY = 0, zoomK = 1;
+let spaceDown = false;         // hand-tool modifier (Space held)
+let panning = null;            // active pan gesture, or null
+let panMoved = false;          // set on pan-move / drag-move → swallow the click it emits
+let dragNode = null;           // active node-drag gesture, or null
+let dragRAF = null;            // rAF handle throttling the drag redraw
 
 function tableTags(t) {
   return Array.isArray(t.tags)
@@ -595,149 +635,212 @@ function exportProposal() {
 }
 let positions = {}; // { [id]: { x, y } }
 
+// Seeded PRNG (mulberry32). The layout path must never touch Math.random /
+// Date.now so two fresh loads of the same schema produce byte-identical
+// positions. Reset to LAYOUT_SEED at the top of every computePositions().
+const LAYOUT_SEED = 0x1a2b3c4d;
+let _layoutSeed = LAYOUT_SEED;
+function layoutRng() {
+  _layoutSeed = (_layoutSeed + 0x6D2B79F5) | 0;
+  let t = Math.imul(_layoutSeed ^ (_layoutSeed >>> 15), 1 | _layoutSeed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+// Fruchterman-Reingold "hub-and-spoke" layout. World coordinates centered at
+// origin (no translate-to-positive — the viewport transform + Fit place the
+// graph on screen). Pure + deterministic: writes `positions`, reads DATA only.
 function computePositions() {
-  const N = DATA.tables.length;
-  const idx = {};
-  DATA.tables.forEach((t, i) => { idx[t.id] = i; });
+  _layoutSeed = LAYOUT_SEED;                       // reset seed → deterministic
 
-  // Initial positions: ring around origin (deterministic)
-  const initialRadius = 30 * Math.sqrt(N);
-  const nodes = DATA.tables.map((t, i) => {
-    const angle = (i / N) * 2 * Math.PI;
-    return {
-      id: t.id,
-      x: Math.cos(angle) * initialRadius,
-      y: Math.sin(angle) * initialRadius,
-      vx: 0, vy: 0,
-    };
+  const ids = DATA.tables.map(t => t.id);
+  const adj = {};
+  ids.forEach(id => { adj[id] = new Set(); });
+
+  // Layout edges come from the SAME normalized set the renderer draws
+  // (collectEdges), so parallel relations of distinct types are preserved and
+  // the simulation matches the picture. Self-loops don't pull.
+  const ledges = [];
+  for (const e of collectEdges()) {
+    if (e.from === e.to) continue;
+    if (adj[e.from] === undefined || adj[e.to] === undefined) continue;
+    adj[e.from].add(e.to); adj[e.to].add(e.from);
+    ledges.push(e);
+  }
+
+  const deg = {}; ids.forEach(id => { deg[id] = adj[id].size; });
+  const conn = ids.filter(id => deg[id] > 0);
+  const iso  = ids.filter(id => deg[id] === 0);
+  // Highest-degree connected node → pinned hub at the origin.
+  const center = conn.reduce((a, b) => (deg[b] > deg[a] ? b : a), conn[0] || ids[0]);
+
+  const pos = {};
+  conn.forEach(id => {
+    const a = layoutRng() * 6.2832, r = 110 + layoutRng() * 420;
+    pos[id] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
   });
+  if (center) pos[center] = { x: 0, y: 0 };
 
-  // Build unique edge pairs (skip belongs_to as before)
-  const edgePairs = new Set();
-  const edges = [];
-  for (const t of DATA.tables) {
-    for (const rel of (t.relations || [])) {
-      if (rel.type === 'belongs_to') continue;
-      const targets = rel.targets
-        ? rel.targets.filter(x => x !== '*')
-        : (rel.target ? [rel.target] : []);
-      for (const tgt of targets) {
-        if (idx[tgt] === undefined) continue;
-        const key = [t.id, tgt].sort().join('|');
-        if (edgePairs.has(key)) continue;
-        edgePairs.add(key);
-        edges.push([idx[t.id], idx[tgt]]);
+  const K = 190;                 // ideal edge length ≈ node width
+  const ITER = 420, G = 0.14;    // iterations, center-gravity pull
+  let temp = 420;                // annealing temperature (× 0.975 / iter)
+
+  for (let it = 0; it < ITER; it++) {
+    const dsp = {}; conn.forEach(id => { dsp[id] = { x: 0, y: 0 }; });
+
+    // Repulsion K²/d
+    for (let i = 0; i < conn.length; i++) {
+      for (let j = i + 1; j < conn.length; j++) {
+        const A = pos[conn[i]], B = pos[conn[j]];
+        let dx = A.x - B.x, dy = A.y - B.y;
+        const d = Math.hypot(dx, dy) || 0.01;
+        const f = (K * K) / d, fx = dx / d * f, fy = dy / d * f;
+        dsp[conn[i]].x += fx; dsp[conn[i]].y += fy;
+        dsp[conn[j]].x -= fx; dsp[conn[j]].y -= fy;
       }
     }
-  }
-
-  // Simulation parameters — tuned for ~45 nodes, ~80 edges
-  const ITERATIONS = 800;
-  const REPULSION = 40000;        // pairwise repulsion strength
-  const SPRING_K = 0.06;          // edge spring stiffness
-  const SPRING_LENGTH = 240;      // ideal edge length
-  const CENTER_FORCE = 0.005;     // pull toward origin
-  const DAMPING = 0.82;
-  const MAX_VELOCITY = 30;
-
-  for (let iter = 0; iter < ITERATIONS; iter++) {
-    const fx = new Float64Array(N);
-    const fy = new Float64Array(N);
-
-    // Pairwise repulsion (O(n^2) — fine for ~45 nodes)
-    for (let i = 0; i < N; i++) {
-      for (let j = i + 1; j < N; j++) {
-        let dx = nodes[i].x - nodes[j].x;
-        let dy = nodes[i].y - nodes[j].y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 < 1) { d2 = 1; dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); }
-        const d = Math.sqrt(d2);
-        const force = REPULSION / d2;
-        const ux = dx / d, uy = dy / d;
-        fx[i] += ux * force; fy[i] += uy * force;
-        fx[j] -= ux * force; fy[j] -= uy * force;
-      }
+    // Attraction d²/K
+    for (const e of ledges) {
+      const A = pos[e.from], B = pos[e.to];
+      let dx = A.x - B.x, dy = A.y - B.y;
+      const d = Math.hypot(dx, dy) || 0.01;
+      const f = (d * d) / K, fx = dx / d * f, fy = dy / d * f;
+      dsp[e.from].x -= fx; dsp[e.from].y -= fy;
+      dsp[e.to].x   += fx; dsp[e.to].y   += fy;
     }
-
-    // Edge springs
-    for (const [a, b] of edges) {
-      const dx = nodes[b].x - nodes[a].x;
-      const dy = nodes[b].y - nodes[a].y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const force = SPRING_K * (d - SPRING_LENGTH);
-      const ux = dx / d, uy = dy / d;
-      fx[a] += ux * force; fy[a] += uy * force;
-      fx[b] -= ux * force; fy[b] -= uy * force;
-    }
-
     // Center gravity
-    for (let i = 0; i < N; i++) {
-      fx[i] += -nodes[i].x * CENTER_FORCE;
-      fy[i] += -nodes[i].y * CENTER_FORCE;
-    }
-
-    // Cooling factor — anneal velocity over iterations
-    const cool = 1 - iter / ITERATIONS;
-
-    // Integrate
-    for (let i = 0; i < N; i++) {
-      nodes[i].vx = (nodes[i].vx + fx[i]) * DAMPING * cool;
-      nodes[i].vy = (nodes[i].vy + fy[i]) * DAMPING * cool;
-      // Clamp velocity
-      const vmag = Math.hypot(nodes[i].vx, nodes[i].vy);
-      if (vmag > MAX_VELOCITY) {
-        nodes[i].vx = (nodes[i].vx / vmag) * MAX_VELOCITY;
-        nodes[i].vy = (nodes[i].vy / vmag) * MAX_VELOCITY;
-      }
-      nodes[i].x += nodes[i].vx;
-      nodes[i].y += nodes[i].vy;
-    }
+    conn.forEach(id => { dsp[id].x -= pos[id].x * G; dsp[id].y -= pos[id].y * G; });
+    // Integrate with temperature-limited step; re-pin the hub each iteration.
+    conn.forEach(id => {
+      if (id === center) return;
+      const dx = dsp[id].x, dy = dsp[id].y, d = Math.hypot(dx, dy) || 0.01;
+      const lim = Math.min(d, temp);
+      pos[id].x += dx / d * lim; pos[id].y += dy / d * lim;
+    });
+    if (center) pos[center] = { x: 0, y: 0 };
+    temp *= 0.975;
   }
 
-  // Final overlap resolution: push apart any nodes that still overlap
-  const ITER_FIX = 50;
-  const SEP_X = NODE_W + 20;
-  const SEP_Y = NODE_H + 20;
-  for (let pass = 0; pass < ITER_FIX; pass++) {
+  positions = pos;
+  resolveOverlaps(conn, 30, 26, 320);
+  packComponents(conn, adj);
+  parkIsolated(conn, iso);
+  // The hub is pinned at origin during the FR pass, but the post-passes
+  // (overlap resolution / component packing) can nudge it. Translate the whole
+  // layout so the hub lands exactly at {0,0} — Fit handles screen placement, so
+  // negative world coords are fine and the "hub at origin" invariant holds.
+  if (center && positions[center]) {
+    const cx = positions[center].x, cy = positions[center].y;
+    if (cx || cy) for (const id in positions) { positions[id].x -= cx; positions[id].y -= cy; }
+  }
+}
+
+// Nudge apart any pair of boxes still overlapping after the force pass.
+function resolveOverlaps(nodes, mxg, myg, iters) {
+  const mw = NODE_W + mxg, mh = NODE_H + myg;
+  for (let t = 0; t < iters; t++) {
     let moved = false;
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
-        const ax = nodes[i].x, ay = nodes[i].y;
-        const bx = nodes[j].x, by = nodes[j].y;
-        const dx = bx - ax, dy = by - ay;
-        const overlapX = SEP_X - Math.abs(dx);
-        const overlapY = SEP_Y - Math.abs(dy);
-        if (overlapX > 0 && overlapY > 0) {
-          // Push along smaller-overlap axis
-          if (overlapX < overlapY) {
-            const push = overlapX / 2 + 1;
-            if (dx >= 0) { nodes[i].x -= push; nodes[j].x += push; }
-            else         { nodes[i].x += push; nodes[j].x -= push; }
-          } else {
-            const push = overlapY / 2 + 1;
-            if (dy >= 0) { nodes[i].y -= push; nodes[j].y += push; }
-            else         { nodes[i].y += push; nodes[j].y -= push; }
-          }
+        const A = positions[nodes[i]], B = positions[nodes[j]];
+        const dx = A.x - B.x, dy = A.y - B.y;
+        const ox = mw - Math.abs(dx), oy = mh - Math.abs(dy);
+        if (ox > 0 && oy > 0) {
           moved = true;
+          if (ox < oy) { const s = (dx < 0 ? -1 : 1) * ox / 2; A.x += s; B.x -= s; }
+          else         { const s = (dy < 0 ? -1 : 1) * oy / 2; A.y += s; B.y -= s; }
         }
       }
     }
     if (!moved) break;
   }
+}
 
-  // Translate so the bounding box starts at (PAD, PAD)
-  let minX = Infinity, minY = Infinity;
-  for (const n of nodes) {
-    minX = Math.min(minX, n.x);
-    minY = Math.min(minY, n.y);
+// Shelf-tile disconnected components so they don't blow up the extent.
+// No-op for a single connected component (the common case) — the force
+// result (centered at origin) is then left untouched.
+function packComponents(conn, adj) {
+  if (conn.length < 2) return;
+  const seen = new Set(), comps = [];
+  conn.forEach(s => {
+    if (seen.has(s)) return;
+    const q = [s], c = []; seen.add(s);
+    while (q.length) { const u = q.pop(); c.push(u); adj[u].forEach(v => { if (!seen.has(v)) { seen.add(v); q.push(v); } }); }
+    comps.push(c);
+  });
+  if (comps.length < 2) return;
+  const GAP = 80, W = NODE_W, H = NODE_H;
+  const boxes = comps.map(c => {
+    let xn = 1e9, xx = -1e9, yn = 1e9, yx = -1e9;
+    c.forEach(id => { const p = positions[id]; xn = Math.min(xn, p.x); xx = Math.max(xx, p.x + W); yn = Math.min(yn, p.y); yx = Math.max(yx, p.y + H); });
+    return { c, xn, yn, w: xx - xn, h: yx - yn, area: (xx - xn) * (yx - yn) };
+  });
+  boxes.sort((a, b) => b.area - a.area);
+  const rowW = Math.max(boxes[0].w, Math.sqrt(boxes.reduce((a, b) => a + b.area, 0)) * 1.4);
+  let cx = 0, cy = 0, rowH = 0;
+  boxes.forEach(b => {
+    if (cx > 0 && cx + b.w > rowW) { cx = 0; cy += rowH + GAP; rowH = 0; }
+    const dx = cx - b.xn, dy = cy - b.yn;
+    b.c.forEach(id => { positions[id].x += dx; positions[id].y += dy; });
+    cx += b.w + GAP; rowH = Math.max(rowH, b.h);
+  });
+}
+
+// Drop isolated (no-relation) nodes into empty pockets inside the connected
+// cluster's bounding box, falling back to a grid below it.
+function parkIsolated(conn, iso) {
+  if (!iso.length) return;
+  const W = NODE_W, H = NODE_H, GX = 30, GY = 26, STEP = 24;
+  if (!conn.length) {
+    const gx = W + 40;
+    iso.forEach((id, i) => { positions[id] = { x: (i % 3) * gx, y: Math.floor(i / 3) * (H + 30) }; });
+    return;
   }
-  positions = {};
-  for (const n of nodes) {
-    positions[n.id] = {
-      x: n.x - minX + PAD,
-      y: n.y - minY + PAD,
-    };
-  }
+  let bxn = 1e9, bxx = -1e9, byn = 1e9, byx = -1e9;
+  conn.forEach(id => { const p = positions[id]; bxn = Math.min(bxn, p.x); bxx = Math.max(bxx, p.x + W); byn = Math.min(byn, p.y); byx = Math.max(byx, p.y + H); });
+  const placed = conn.slice();
+  const freeAt = (x, y) => placed.every(id => { const p = positions[id]; return !(x < p.x + W + GX && p.x < x + W + GX && y < p.y + H + GY && p.y < y + H + GY); });
+  let fb = 0;
+  iso.forEach(id => {
+    let best = null;
+    for (let y = byn; y <= byx - H && !best; y += STEP) {
+      for (let x = bxn; x <= bxx - W; x += STEP) { if (freeAt(x, y)) { best = { x, y }; break; } }
+    }
+    if (!best) { best = { x: bxn + (fb % 3) * (W + 40), y: byx + 60 + Math.floor(fb / 3) * (H + 30) }; fb++; }
+    positions[id] = { x: best.x, y: best.y }; placed.push(id);
+  });
+}
+
+// ---- layout persistence (per project + schema signature) ----
+function layoutKey() {
+  const proj = (DATA && DATA.meta && DATA.meta.project) || 'default';
+  const sig = DATA.tables.map(t => t.id).sort().join(',');
+  let h = 0;
+  for (let i = 0; i < sig.length; i++) h = (Math.imul(h, 31) + sig.charCodeAt(i)) | 0;
+  return 'flatbase.layout.' + proj + '.' + (h >>> 0).toString(36);
+}
+function loadPositions() {
+  try {
+    const raw = localStorage.getItem(layoutKey());
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    if (DATA.tables.every(t => saved[t.id] && Number.isFinite(saved[t.id].x) && Number.isFinite(saved[t.id].y))) {
+      positions = {};
+      DATA.tables.forEach(t => { positions[t.id] = { x: saved[t.id].x, y: saved[t.id].y }; });
+      return true;
+    }
+  } catch {}
+  return false;
+}
+function saveLayout() {
+  try { localStorage.setItem(layoutKey(), JSON.stringify(positions)); } catch {}
+}
+// Load-or-compute wrapper. Saved layouts survive reloads; a schema change
+// (different sorted-id signature) invalidates them via layoutKey().
+function applyLayout() {
+  if (loadPositions()) return;
+  computePositions();
+  saveLayout();
 }
 
 function computeAnchors(fromPos, toPos) {
@@ -769,20 +872,9 @@ function computeAnchors(fromPos, toPos) {
   return { from: fromAnchor, to: toAnchor };
 }
 
-function setSVGSize() {
-  const svg = document.getElementById('diagram');
-  let maxX = 0, maxY = 0;
-  for (const { x, y } of Object.values(positions)) {
-    maxX = Math.max(maxX, x + NODE_W + PAD);
-    maxY = Math.max(maxY, y + NODE_H + PAD);
-  }
-  svg.setAttribute('width', maxX);
-  svg.setAttribute('height', maxY);
-}
-
 function renderNodes() {
-  const svg = document.getElementById('diagram');
-  svg.querySelectorAll('.node').forEach(el => el.remove());
+  const layer = document.getElementById('node-layer');
+  layer.textContent = '';
 
   for (const t of DATA.tables) {
     const pos = positions[t.id];
@@ -794,12 +886,15 @@ function renderNodes() {
 
     const isArbIgnored = !!(t.proposed && tableArb(t.id).ignore);
 
+    // Node is a translated group; all child geometry is LOCAL to the node's
+    // top-left (0,0), so drag (later package) is a transform-only update.
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.classList.add('node');
     if (isHidden) g.classList.add('hidden');
     if (isHighlighted) g.classList.add('highlighted');
     if (isArbIgnored) g.classList.add('arb-ignored');
     g.dataset.id = t.id;
+    g.setAttribute('transform', `translate(${pos.x},${pos.y})`);
 
     if (t.notes) {
       const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
@@ -808,8 +903,8 @@ function renderNodes() {
     }
 
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', pos.x);
-    rect.setAttribute('y', pos.y);
+    rect.setAttribute('x', 0);
+    rect.setAttribute('y', 0);
     rect.setAttribute('width', NODE_W);
     rect.setAttribute('height', NODE_H);
     rect.setAttribute('rx', 6);
@@ -824,8 +919,8 @@ function renderNodes() {
     g.appendChild(rect);
 
     const textEN = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    textEN.setAttribute('x', pos.x + 10);
-    textEN.setAttribute('y', pos.y + 20);
+    textEN.setAttribute('x', 10);
+    textEN.setAttribute('y', 20);
     textEN.setAttribute('font-size', '12');
     textEN.setAttribute('font-weight', '700');
     textEN.setAttribute('fill', '#1a1a2e');
@@ -833,16 +928,16 @@ function renderNodes() {
     g.appendChild(textEN);
 
     const textJA = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    textJA.setAttribute('x', pos.x + 10);
-    textJA.setAttribute('y', pos.y + 36);
+    textJA.setAttribute('x', 10);
+    textJA.setAttribute('y', 36);
     textJA.setAttribute('font-size', '10');
     textJA.setAttribute('fill', '#666');
     textJA.textContent = t.name_ja;
     g.appendChild(textJA);
 
     const badgeRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    badgeRect.setAttribute('x', pos.x + 10);
-    badgeRect.setAttribute('y', pos.y + 46);
+    badgeRect.setAttribute('x', 10);
+    badgeRect.setAttribute('y', 46);
     badgeRect.setAttribute('width', 70);
     badgeRect.setAttribute('height', 16);
     badgeRect.setAttribute('rx', 3);
@@ -850,8 +945,8 @@ function renderNodes() {
     g.appendChild(badgeRect);
 
     const badgeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    badgeText.setAttribute('x', pos.x + 45);
-    badgeText.setAttribute('y', pos.y + 58);
+    badgeText.setAttribute('x', 45);
+    badgeText.setAttribute('y', 58);
     badgeText.setAttribute('font-size', '9');
     badgeText.setAttribute('font-weight', '600');
     badgeText.setAttribute('text-anchor', 'middle');
@@ -862,8 +957,8 @@ function renderNodes() {
     const nodeTags = tableTags(t);
     if (nodeTags.length && !t.proposed) {
       const tg = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      tg.setAttribute('x', pos.x + NODE_W - 8);
-      tg.setAttribute('y', pos.y + 58);
+      tg.setAttribute('x', NODE_W - 8);
+      tg.setAttribute('y', 58);
       tg.setAttribute('font-size', '9');
       tg.setAttribute('text-anchor', 'end');
       tg.setAttribute('fill', '#718096');
@@ -875,19 +970,29 @@ function renderNodes() {
     if (t.proposed) {
       const pl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       // Right of the type badge (x+10..x+80); tags are skipped on proposed nodes to avoid overlap.
-      pl.setAttribute('x', pos.x + 86);
-      pl.setAttribute('y', pos.y + 58);
+      pl.setAttribute('x', 86);
+      pl.setAttribute('y', 58);
       pl.setAttribute('font-size', '9');
       pl.setAttribute('fill', '#5b21b6');
       pl.textContent = isArbIgnored ? 'ignored' : 'proposed';
       g.appendChild(pl);
     }
 
-    g.addEventListener('click', () => openDetailPanel(t.id));
+    // Left-drag repositions the node; a plain click (no 4px movement) focuses it
+    // and opens the detail panel without recentering (the user is already
+    // looking at it). A pan gesture (space/right-drag) that emits a click is
+    // swallowed by the capture-phase guard in initViewport().
+    g.addEventListener('pointerdown', (ev) => startNodeDrag(ev, t.id));
+    g.addEventListener('click', (ev) => {
+      if (spaceDown) return;
+      ev.stopPropagation();            // don't let the background-click clear focus
+      focusNode(t.id);
+      openDetailPanel(t.id);
+    });
     g.addEventListener('mouseenter', () => setHoveredNode(t.id));
     g.addEventListener('mouseleave', () => setHoveredNode(null));
 
-    svg.appendChild(g);
+    layer.appendChild(g);
   }
 }
 
@@ -960,6 +1065,91 @@ function cardinalityFor(edge) {
   }
 }
 
+// Crow's-foot end markers (always-visible cardinality syntax), separate from the
+// hover-only cardinalityFor() badge text. The fork ("many") sits at the FK-holding
+// entity; the tick ("one") at the referenced entity. has_many is emitted parent→child
+// (from = parent/one, to = child/many, the FK holder). extends / polymorphic keep their
+// arrowhead + dash treatment (null here); belongs_to is never drawn (filtered upstream).
+function endMarkersFor(edge) {
+  switch (edge.type) {
+    case 'has_many':     return { from: 'tick', to: 'fork' };
+    case 'has_one':      return { from: 'tick', to: 'tick' };
+    case 'many_to_many': return { from: 'fork', to: 'fork' };
+    default:             return null;
+  }
+}
+
+// Outward normal of the box side an anchor sits on (the direction the edge leaves).
+function outNormal(side) {
+  return side === 'right' ? [1, 0]
+    : side === 'left' ? [-1, 0]
+    : side === 'top' ? [0, -1]
+    : [0, 1];
+}
+
+// Crow's-foot depth: distance from the box edge to the fork apex (the 3-prong
+// convergence point that sits on the line). Tuned for the 190×72 nodes.
+const FORK_D = 11;
+
+// Stroked end-mark at an anchor. fork = 3 prongs on the box edge converging to an
+// apex FORK_D out along the line; tick = one short stroke perpendicular to the line.
+// n = outward normal of the side the edge leaves from; (px,py) = its perpendicular.
+function cardMark(x, y, side, kind) {
+  const n = outNormal(side), px = -n[1], py = n[0];
+  if (kind === 'fork') {
+    const S = 6, ax = x + n[0] * FORK_D, ay = y + n[1] * FORK_D;
+    return `M ${ax} ${ay} L ${x} ${y} M ${ax} ${ay} L ${x + px * S} ${y + py * S} M ${ax} ${ay} L ${x - px * S} ${y - py * S}`;
+  }
+  const T = 6, S = 6, cx = x + n[0] * T, cy = y + n[1] * T;
+  return `M ${cx + px * S} ${cy + py * S} L ${cx - px * S} ${cy - py * S}`;
+}
+
+// Where the visible line should end at a fork ("many") end: pulled FORK_D/2 out
+// along the normal so the fork's apex reads cleanly. Tick ends stay at the box.
+function lineEndPoint(x, y, side, many) {
+  if (!many) return { x, y };
+  const n = outNormal(side), d = FORK_D / 2;
+  return { x: x + n[0] * d, y: y + n[1] * d };
+}
+
+// A stroked end-marker path element — inherits the edge stroke colour, never dashed.
+function makeEdgeMarker(end, color) {
+  const m = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  m.setAttribute('class', 'edge-marker');
+  m.dataset.end = end;
+  m.setAttribute('fill', 'none');
+  m.setAttribute('stroke', color);
+  m.setAttribute('stroke-width', '1.5');
+  m.setAttribute('stroke-dasharray', 'none');
+  return m;
+}
+
+// Set the geometry of one edge group's paths in place from a pre-computed edgeGeometry.
+// Shared by renderEdges (initial) and redrawIncidentEdges (drag): the visible line is
+// trimmed at fork ends, the wide hit path stays full-length, and each crow's-foot marker
+// is repainted by class so a drag never stamps the edge path onto a marker.
+function applyEdgePaths(g, edge, geo) {
+  const { x1, y1, x2, y2, cx1, cy1, cx2, cy2, fromSide, toSide, isSelf } = geo;
+  const marks = isSelf ? null : endMarkersFor(edge);
+  let lineD = geo.d;
+  if (marks) {
+    const aMany = marks.from === 'fork', bMany = marks.to === 'fork';
+    if (aMany || bMany) {
+      const a = lineEndPoint(x1, y1, fromSide, aMany);
+      const b = lineEndPoint(x2, y2, toSide, bMany);
+      lineD = `M ${a.x} ${a.y} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${b.x} ${b.y}`;
+    }
+  }
+  const line = g.querySelector('path.edge-line');
+  if (line) line.setAttribute('d', lineD);
+  const hit = g.querySelector('path.hit-path');
+  if (hit) hit.setAttribute('d', geo.d);
+  const mFrom = g.querySelector('.edge-marker[data-end="from"]');
+  if (mFrom) mFrom.setAttribute('d', marks && marks.from ? cardMark(x1, y1, fromSide, marks.from) : '');
+  const mTo = g.querySelector('.edge-marker[data-end="to"]');
+  if (mTo) mTo.setAttribute('d', marks && marks.to ? cardMark(x2, y2, toSide, marks.to) : '');
+}
+
 function cardinalityLabelOffset(side, dist) {
   switch (side) {
     case 'right':  return { dx: dist,      dy: -4, anchor: 'start' };
@@ -1005,7 +1195,19 @@ function appendCardinalityBadge(parent, cx, cy, textAnchor, text) {
 }
 
 function collectEdges() {
-  const seen = new Set();
+  // Dedup key distinguishes genuinely-different edges: sorted endpoints + type +
+  // carrying column (via/viaTable). Distinct FK columns between the same pair
+  // (e.g. created_by / updated_by) survive as separate edges, which a plain
+  // endpoint+type key would collapse. `label` is deliberately NOT in the key: a
+  // relation declared from BOTH sides with mismatched labels (e.g. a bidirectional
+  // many_to_many, "contracted" one way / unlabeled the other) is ONE relation and
+  // must merge — including the label would render it as two exactly-overlapping
+  // edges. `proposed` is NOT in the key either: a proposed and a defined edge that
+  // are otherwise identical are the same relation — they MERGE with proposed
+  // priority (proposed || defined), so a proposed edge is never hidden behind a
+  // defined duplicate. The key is stored on the edge (`edge.key`) so edge-focus can
+  // target exactly one of several edges between the same pair.
+  const byKey = new Map();
   const edges = [];
   for (const table of DATA.tables) {
     for (const rel of (table.relations || [])) {
@@ -1015,27 +1217,93 @@ function collectEdges() {
         ? rel.targets.filter(t => t !== '*')
         : rel.target ? [rel.target] : [];
       for (const target of targets) {
-        const key = [table.id, target].sort().join('|') + '|' + rel.type;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        edges.push({
+        const label = rel.label || rel.type;
+        const key = [table.id, target].sort().join('|') + '|' + rel.type +
+                    '|' + (rel.viaTable || '') + '|' + (rel.via || '');
+        const existing = byKey.get(key);
+        if (existing) {
+          // Same relation seen from both sides / duplicated: keep proposed if either is.
+          existing.proposed = existing.proposed || !!rel.proposed;
+          continue;
+        }
+        const edge = {
           from: table.id,
           to: target,
           type: rel.type,
-          label: rel.label || rel.type,
+          label,
           proposed: !!rel.proposed,
           via: rel.via,
           viaTable: rel.viaTable,
-        });
+          key,
+        };
+        byKey.set(key, edge);
+        edges.push(edge);
       }
     }
   }
   return edges;
 }
 
+// Pure geometry of one edge from the current node positions. Extracted so a
+// node drag can recompute only its incident edges (transform-only redraw)
+// without a full renderEdges() pass.
+function edgeGeometry(edge) {
+  const fromPos = positions[edge.from];
+  const toPos = positions[edge.to];
+  const isSelf = edge.from === edge.to;
+
+  let x1, y1, x2, y2, cx1, cy1, cx2, cy2;
+  let fromSide = null, toSide = null;
+  const CTL = 60;
+  if (isSelf) {
+    // Self-relation: draw a small loop bulging out to the right of the node.
+    const right = fromPos.x + NODE_W;
+    const yTop = fromPos.y + NODE_H * 0.3;
+    const yBot = fromPos.y + NODE_H * 0.7;
+    x1 = right; y1 = yTop;
+    x2 = right; y2 = yBot;
+    const LOOP_OUT = 70;
+    const LOOP_FLARE = 30;
+    cx1 = right + LOOP_OUT; cy1 = yTop - LOOP_FLARE;
+    cx2 = right + LOOP_OUT; cy2 = yBot + LOOP_FLARE;
+    fromSide = 'right'; toSide = 'right';
+  } else {
+    const { from: a, to: b } = computeAnchors(fromPos, toPos);
+    x1 = a.x; y1 = a.y;
+    x2 = b.x; y2 = b.y;
+    fromSide = a.side; toSide = b.side;
+
+    cx1 = x1; cy1 = y1; cx2 = x2; cy2 = y2;
+    if (a.side === 'right')  cx1 = x1 + CTL;
+    if (a.side === 'left')   cx1 = x1 - CTL;
+    if (a.side === 'top')    cy1 = y1 - CTL;
+    if (a.side === 'bottom') cy1 = y1 + CTL;
+    if (b.side === 'right')  cx2 = x2 + CTL;
+    if (b.side === 'left')   cx2 = x2 - CTL;
+    if (b.side === 'top')    cy2 = y2 - CTL;
+    if (b.side === 'bottom') cy2 = y2 + CTL;
+  }
+
+  const d = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+  return { d, x1, y1, x2, y2, cx1, cy1, cx2, cy2, fromSide, toSide, isSelf };
+}
+
+// Recompute the path `d` of every edge incident to `id` in place — used mid-drag
+// so the node moves with its edges without a full render(). Labels/cardinality
+// badges (hover-only, positioned) are left stale until the drop full-render.
+function redrawIncidentEdges(id) {
+  const layer = document.getElementById('edge-layer');
+  if (!layer) return;
+  layer.querySelectorAll('.edge').forEach(g => {
+    if (g.dataset.from !== id && g.dataset.to !== id) return;
+    if (!g.__edge) return;
+    applyEdgePaths(g, g.__edge, edgeGeometry(g.__edge));
+  });
+}
+
 function renderEdges(visibleIds) {
-  const svg = document.getElementById('diagram');
-  svg.querySelectorAll('.edge').forEach(el => el.remove());
+  const layer = document.getElementById('edge-layer');
+  layer.textContent = '';
 
   const visible = new Set(visibleIds);
   const edges = collectEdges();
@@ -1046,84 +1314,76 @@ function renderEdges(visibleIds) {
     // An edge is dropped from view when its carrying FK column is arb-ignored, or when
     // either endpoint is an arb-ignored proposed table.
     const tableIgnored = id => { const t = DATA.tables.find(x => x.id === id); return !!(t && t.proposed && tableArb(id).ignore); };
+    // A column arb entry only suppresses the edge when the carrying column is STILL
+    // proposed — matching the export path (only proposed columns are arbitrable), so
+    // a stale arb key for a since-de-proposed column never hides a live edge.
+    const viaColProposed = (tid, name) => {
+      const t = DATA.tables.find(x => x.id === tid);
+      if (!t || !Array.isArray(t.columns)) return false;
+      const col = t.columns.find(c => (typeof c === 'object' ? c.name : c) === name);
+      return !!(col && typeof col === 'object' && col.proposed);
+    };
     const arbSuppressed =
-      (edge.via && edge.viaTable && colArb(edge.viaTable, edge.via).ignore) ||
+      (edge.via && edge.viaTable && viaColProposed(edge.viaTable, edge.via)
+        && colArb(edge.viaTable, edge.via).ignore) ||
       tableIgnored(edge.from) || tableIgnored(edge.to);
 
-    const fromPos = positions[edge.from];
-    const toPos = positions[edge.to];
-    const isSelf = edge.from === edge.to;
-
-    let x1, y1, x2, y2, cx1, cy1, cx2, cy2;
-    let fromSide = null, toSide = null;
-    const CTL = 60;
-    if (isSelf) {
-      // Self-relation: draw a small loop bulging out to the right of the node.
-      const right = fromPos.x + NODE_W;
-      const yTop = fromPos.y + NODE_H * 0.3;
-      const yBot = fromPos.y + NODE_H * 0.7;
-      x1 = right; y1 = yTop;
-      x2 = right; y2 = yBot;
-      const LOOP_OUT = 70;
-      const LOOP_FLARE = 30;
-      cx1 = right + LOOP_OUT; cy1 = yTop - LOOP_FLARE;
-      cx2 = right + LOOP_OUT; cy2 = yBot + LOOP_FLARE;
-      fromSide = 'right'; toSide = 'right';
-    } else {
-      const { from: a, to: b } = computeAnchors(fromPos, toPos);
-      x1 = a.x; y1 = a.y;
-      x2 = b.x; y2 = b.y;
-      fromSide = a.side; toSide = b.side;
-
-      cx1 = x1; cy1 = y1; cx2 = x2; cy2 = y2;
-      if (a.side === 'right')  cx1 = x1 + CTL;
-      if (a.side === 'left')   cx1 = x1 - CTL;
-      if (a.side === 'top')    cy1 = y1 - CTL;
-      if (a.side === 'bottom') cy1 = y1 + CTL;
-      if (b.side === 'right')  cx2 = x2 + CTL;
-      if (b.side === 'left')   cx2 = x2 - CTL;
-      if (b.side === 'top')    cy2 = y2 - CTL;
-      if (b.side === 'bottom') cy2 = y2 + CTL;
-    }
+    const geo = edgeGeometry(edge);
+    const { x1, y1, x2, y2, cx1, cx2, fromSide, toSide, isSelf } = geo;
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.classList.add('edge');
     g.dataset.from = edge.from;
     g.dataset.to = edge.to;
+    g.dataset.ekey = edge.key; // stable per-edge key (edge-focus targets one of parallels)
+    g.__edge = edge;            // edge index: element → edge (for incident redraw)
     if (!bothVisible || arbSuppressed) g.classList.add('hidden');
 
-    const d = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+    const d = geo.d;
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     hit.setAttribute('d', d);
     hit.setAttribute('class', 'hit-path');
     hit.setAttribute('stroke-width', '14');
+    // Proposed edges match the proposed-node treatment: violet (+ dash on the line).
+    const strokeColor = edge.proposed ? '#8b5cf6' : '#bbb';
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('class', 'edge-line');
     path.setAttribute('d', d);
     path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', '#bbb');
+    path.setAttribute('stroke', strokeColor);
     path.setAttribute('stroke-width', '1.5');
 
-    if (edge.type === 'extends') {
+    // Converted types (has_many / has_one / many_to_many) carry always-visible
+    // crow's-foot end marks instead of an SVG <marker> arrowhead (so proposed
+    // edges inherit violet naturally). extends / polymorphic keep their arrow + dash.
+    const marks = isSelf ? null : endMarkersFor(edge);
+    if (marks) {
+      // no marker-end: the crow's-feet below carry the cardinality
+    } else if (edge.type === 'extends') {
       path.setAttribute('stroke-dasharray', '6,3');
       path.setAttribute('marker-end', 'url(#arrow)');
-    } else if (edge.type === 'many_to_many') {
-      path.setAttribute('marker-end', 'url(#arrow)');
-      path.setAttribute('marker-start', 'url(#arrow-start)');
     } else if (edge.type === 'polymorphic') {
       path.setAttribute('stroke-dasharray', '2,3');
       path.setAttribute('marker-end', 'url(#arrow)');
     } else {
+      // self-referential converted types (marks suppressed) + any fallback keep an arrow
       path.setAttribute('marker-end', 'url(#arrow)');
     }
 
     if (edge.proposed) {
-      // Proposed edges match the proposed-node treatment: violet + dashed.
-      path.setAttribute('stroke', '#8b5cf6');
       path.setAttribute('stroke-dasharray', '5,3');
     }
 
     g.appendChild(path);
+    if (marks) {
+      // Crow's-foot marks: stroked end geometry, edge stroke colour, never dashed.
+      if (marks.from) g.appendChild(makeEdgeMarker('from', strokeColor));
+      if (marks.to)   g.appendChild(makeEdgeMarker('to', strokeColor));
+    }
     g.appendChild(hit); // last so the wide invisible stroke is on top for hit testing
+
+    // Trim the visible line at fork ends + paint the marks from the shared geometry.
+    applyEdgePaths(g, edge, geo);
 
     const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     if (isSelf) {
@@ -1151,8 +1411,18 @@ function renderEdges(visibleIds) {
       }
     }
 
-    const firstNode = svg.querySelector('.node');
-    svg.insertBefore(g, firstNode);
+    // Edge click focuses its two endpoints + itself. The wide transparent
+    // hit-path carries the pointer-events; stopPropagation keeps the background
+    // click (clearFocus) from firing.
+    g.addEventListener('click', (ev) => {
+      if (spaceDown || panMoved) return;
+      ev.stopPropagation();
+      focusEdge(edge);
+    });
+
+    // Z-order is structural: edge-layer sits before node-layer in the DOM, so
+    // edges always render under nodes — just append.
+    layer.appendChild(g);
   }
 }
 
@@ -1234,9 +1504,10 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function openDetailPanel(id) {
+function openDetailPanel(id, opts) {
   const table = DATA.tables.find(t => t.id === id);
   if (!table) return;
+  const center = !!(opts && opts.center);   // recenter ONLY on intentional navigation
   openPanelId = id;
   highlightedNode = id;
 
@@ -1490,7 +1761,7 @@ function openDetailPanel(id) {
   body.querySelectorAll('.navigable[data-target]').forEach(el => {
     const tgt = el.dataset.target;
     if (!tableById[tgt]) return;
-    el.addEventListener('click', e => { e.stopPropagation(); openDetailPanel(tgt); });
+    el.addEventListener('click', e => { e.stopPropagation(); focusNode(tgt); openDetailPanel(tgt, { center: true }); });
     el.addEventListener('mouseenter', () => setHoveredNode(tgt, 'detail', id));
     el.addEventListener('mouseleave', () => setHoveredNode(null));
   });
@@ -1502,27 +1773,22 @@ function openDetailPanel(id) {
     el.addEventListener('mouseleave', () => setHoveredNode(null));
   });
 
-  // Scroll the diagram to bring the table into view (matches previous highlight behavior)
-  const pos = positions[id];
-  if (pos) {
-    const wrap = document.getElementById('diagram-wrap');
-    wrap.scrollTo({
-      left: Math.max(0, pos.x - wrap.clientWidth / 2 + NODE_W / 2),
-      top: Math.max(0, pos.y - wrap.clientHeight / 2 + NODE_H / 2),
-      behavior: 'smooth',
-    });
-  }
+  // Pan-to-center the table ONLY when navigation is intentional (sidebar / FK
+  // click). Same-id refreshes (arbitration buttons, hide toggle) never recenter.
+  if (center) centerViewportOnNode(id);
 
-  render();
-  setHoveredNode(null); // re-applies focus emphasis to the newly selected node
+  render();               // render() runs applyFocus() — focus emphasis is preserved
+  setHoveredNode(null);   // clear any stale transient hover state
 }
 
 function closeDetailPanel() {
   document.getElementById('detail-panel').classList.add('closed');
   openPanelId = null;
   highlightedNode = null;
+  focusedNode = null;   // closing the panel also exits focus (applyFocus runs in render)
+  focusedEdge = null;
   render();
-  setHoveredNode(null); // clears emphasis now that nothing is selected
+  setHoveredNode(null); // clears transient hover emphasis now that nothing is selected
 }
 
 function getNeighbors(id) {
@@ -1620,7 +1886,7 @@ function renderSidebar() {
         toggleNodeVisibility(t.id);
       });
 
-      row.querySelector('.row-body').addEventListener('click', () => openDetailPanel(t.id));
+      row.querySelector('.row-body').addEventListener('click', () => { focusNode(t.id); openDetailPanel(t.id, { center: true }); });
       row.addEventListener('mouseenter', () => setHoveredNode(t.id));
       row.addEventListener('mouseleave', () => setHoveredNode(null));
       nav.appendChild(row);
@@ -1700,6 +1966,17 @@ function render() {
   renderNodes();
   renderSidebar();
   renderDomainFilters();
+  pruneFocusIfHidden();       // a selection that became invisible must not dim the graph
+  applyFocus();               // re-apply .dim/.hi to the freshly rebuilt DOM
+}
+
+// Clear focus when the focused node (or either endpoint of the focused edge) is no
+// longer visible — otherwise a proposed-filter / domain toggle / hide would dim the
+// whole visible graph around a selection the user can no longer see.
+function pruneFocusIfHidden() {
+  const vis = new Set(getVisibleIds());
+  if (focusedNode != null && !vis.has(focusedNode)) focusedNode = null;
+  if (focusedEdge != null && !(vis.has(focusedEdge.from) && vis.has(focusedEdge.to))) focusedEdge = null;
 }
 
 function resetState() {
@@ -1713,36 +1990,23 @@ function resetState() {
   const searchEl = document.getElementById('sidebar-search');
   if (searchEl) searchEl.value = '';
   highlightedNode = null;
+  focusedNode = null;         // Reset clears focus (applyFocus runs inside the render below)
+  focusedEdge = null;
+  // Reset semantics: drop any saved arrangement, recompute the layout, and
+  // Fit. closeDetailPanel() performs the single render; then fit the fresh graph.
+  try { localStorage.removeItem(layoutKey()); } catch {}
+  computePositions();
+  saveLayout();
   closeDetailPanel();
-  render();
-}
-
-function highlightNode(id) {
-  highlightedNode = highlightedNode === id ? null : id;
-  render();
-  setHoveredNode(null);
-
-  if (highlightedNode) {
-    const pos = positions[id];
-    if (!pos) return;
-    const wrap = document.getElementById('diagram-wrap');
-    wrap.scrollTo({
-      left: Math.max(0, pos.x - wrap.clientWidth / 2 + NODE_W / 2),
-      top: Math.max(0, pos.y - wrap.clientHeight / 2 + NODE_H / 2),
-      behavior: 'smooth',
-    });
-  }
+  fitView();
 }
 
 function setHoveredNode(id, source, pairWith) {
   // pairWith may be a string (single-leg orange overlay) or string[] (bundle).
+  // Persistent neighbourhood emphasis is owned by focus mode (applyFocus); this
+  // function handles only the TRANSIENT hover state (and the detail-pane orange
+  // pair overlay), so clearing hover truly clears — no fallback to the selection.
   const svg = document.getElementById('diagram');
-  // When clearing hover, fall back to the selected node so its neighbours stay emphasised.
-  if (id == null && highlightedNode) {
-    id = highlightedNode;
-    source = undefined;
-    pairWith = undefined;
-  }
   const isArrayPair = Array.isArray(pairWith);
   const pairTargets = pairWith == null
     ? []
@@ -2132,6 +2396,7 @@ function buildFrozenHTML(data) {
     <option value="proposed">Proposed only</option>
     <option value="defined">Defined only</option>
   </select>
+  <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
   <button id="reset-btn">Reset</button>
   <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
   <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
@@ -2149,6 +2414,10 @@ function buildFrozenHTML(data) {
   <div id="diagram-wrap">
     <svg id="diagram">
       <defs id="svg-defs"></defs>
+      <g id="viewport">
+        <g id="edge-layer"></g>
+        <g id="node-layer"></g>
+      </g>
     </svg>
   </div>
   <aside id="detail-panel" class="closed">
@@ -2209,10 +2478,279 @@ async function loadData() {
 
 function clearCachedData() {
   localStorage.removeItem(STORAGE_KEY);
-  // Arbitration decisions belong to the loaded proposal — a data reset discards them too,
-  // so a new proposal with the same meta.project never inherits stale decisions.
+  // Arbitration decisions and the saved layout belong to the loaded proposal —
+  // a data reset discards them too, so a new proposal with the same
+  // meta.project never inherits stale decisions or node positions.
   try { if (DATA) localStorage.removeItem(arbKey()); } catch {}
+  try { if (DATA) localStorage.removeItem(layoutKey()); } catch {}
   location.reload();
+}
+
+// ---- viewport: pan / zoom / fit ----
+function applyViewport() {
+  const vp = document.getElementById('viewport');
+  if (vp) vp.setAttribute('transform', `translate(${panX},${panY}) scale(${zoomK})`);
+}
+
+// Screen (client) point → world coordinates under the current transform.
+function screenToWorld(clientX, clientY) {
+  const s = document.getElementById('diagram').getBoundingClientRect();
+  return { x: (clientX - s.left - panX) / zoomK, y: (clientY - s.top - panY) / zoomK };
+}
+
+// Bounding box (world coords) of the currently visible nodes.
+function visibleBBox() {
+  let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+  const hiddenSet = new Set(getVisibleIds());
+  for (const t of DATA.tables) {
+    if (!hiddenSet.has(t.id)) continue;
+    const p = positions[t.id];
+    if (!p) continue;
+    a = Math.min(a, p.x); b = Math.min(b, p.y);
+    c = Math.max(c, p.x + NODE_W); d = Math.max(d, p.y + NODE_H);
+  }
+  if (!isFinite(a)) return null;
+  return { a, b, c, d };
+}
+
+// Fit the visible graph into the container, clearing pan/zoom to a framed view.
+function fitView() {
+  const svg = document.getElementById('diagram');
+  const s = svg.getBoundingClientRect();
+  const box = visibleBBox();
+  if (!box) return;
+  const w = box.c - box.a, h = box.d - box.b;
+  if (w <= 0 || !isFinite(w)) return;
+  zoomK = Math.max(0.12, Math.min(s.width / (w + 120), s.height / (h + 120), 1.4));
+  panX = (s.width - w * zoomK) / 2 - box.a * zoomK;
+  panY = (s.height - h * zoomK) / 2 - box.b * zoomK;
+  applyViewport();
+}
+
+// Pan so a node's center sits at the container center, keeping the current zoom.
+// Called only on intentional navigation (sidebar / FK click).
+function centerViewportOnNode(id) {
+  const p = positions[id];
+  if (!p) return;
+  const s = document.getElementById('diagram').getBoundingClientRect();
+  const wx = p.x + NODE_W / 2, wy = p.y + NODE_H / 2;
+  panX = s.width / 2 - wx * zoomK;
+  panY = s.height / 2 - wy * zoomK;
+  applyViewport();
+}
+
+function isPanGesture(ev) { return spaceDown || ev.button === 2; }
+
+// ---- node drag ----
+// A left-button pointerdown on a node starts a *potential* drag. Movement past a
+// 4px threshold promotes it to a real drag: from then on we only rewrite the
+// node group's transform + its incident edge paths (rAF-throttled), never a full
+// render. The drop does one full render() + saveLayout(). panMoved is shared with
+// the pan gesture so the capture-phase click guard swallows the drag's click —
+// a dragged node must NOT open the detail panel.
+function startNodeDrag(ev, id) {
+  if (isPanGesture(ev)) return;      // hand-tool: let the pan handler on the SVG take it
+  if (ev.button !== 0) return;       // left button only
+  if (!positions[id]) return;
+  ev.stopPropagation();              // pre-empt the SVG pointerdown (pan) for this gesture
+  panMoved = false;                  // fresh gesture — clear any stale flag
+  const w = screenToWorld(ev.clientX, ev.clientY);
+  dragNode = { id, dx: w.x - positions[id].x, dy: w.y - positions[id].y,
+               sx: ev.clientX, sy: ev.clientY, moved: false, pointerId: ev.pointerId };
+}
+
+// Called from the SVG pointermove handler while a node drag is live.
+function onNodeDragMove(ev) {
+  // Below the 4px threshold this is still a potential *click*: don't touch
+  // positions at all (a sub-threshold press must never move the node in memory),
+  // don't capture, don't schedule a redraw.
+  if (Math.abs(ev.clientX - dragNode.sx) + Math.abs(ev.clientY - dragNode.sy) <= 4) return;
+  if (!dragNode.moved) {
+    dragNode.moved = true;
+    // Capture lazily — only once the drag is real — so a plain click never
+    // retargets and still dispatches to the node handler.
+    try { document.getElementById('diagram').setPointerCapture(dragNode.pointerId); } catch {}
+  }
+  panMoved = true;                 // swallow the click this gesture will emit
+  const w = screenToWorld(ev.clientX, ev.clientY);
+  positions[dragNode.id].x = w.x - dragNode.dx;
+  positions[dragNode.id].y = w.y - dragNode.dy;
+  if (dragRAF) return;
+  dragRAF = requestAnimationFrame(() => {
+    dragRAF = null;
+    if (!dragNode) return;
+    const g = document.querySelector(`#node-layer .node[data-id="${cssEscape(dragNode.id)}"]`);
+    if (g) g.setAttribute('transform', `translate(${positions[dragNode.id].x},${positions[dragNode.id].y})`);
+    redrawIncidentEdges(dragNode.id);
+  });
+}
+
+// Called from the SVG pointerup/pointercancel handler to finish a node drag.
+function endNodeDrag() {
+  if (!dragNode) return;                   // idempotent: window + SVG pointerup both fire
+  if (dragRAF) { cancelAnimationFrame(dragRAF); dragRAF = null; }
+  const moved = dragNode.moved;
+  try { document.getElementById('diagram').releasePointerCapture(dragNode.pointerId); } catch {}
+  dragNode = null;
+  if (moved) { render(); saveLayout(); }   // persist the manual arrangement
+}
+
+function cssEscape(s) {
+  return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
+}
+
+// ---- focus mode ----
+// applyFocus reads focusedNode/focusedEdge and toggles .dim/.hi on the live DOM
+// (called as the last line of render() so it survives every re-render, and
+// directly on edge focus which does not rebuild the DOM).
+function applyFocus() {
+  const svg = document.getElementById('diagram');
+  if (!svg) return;
+  const nodeEls = svg.querySelectorAll('#node-layer .node');
+  const edgeEls = svg.querySelectorAll('#edge-layer .edge');
+  if (focusedNode == null && focusedEdge == null) {
+    document.body.classList.remove('focusing');
+    nodeEls.forEach(g => g.classList.remove('dim', 'hi'));
+    edgeEls.forEach(g => g.classList.remove('dim', 'hi'));
+    return;
+  }
+  document.body.classList.add('focusing');
+  let keepN, keepEdge;
+  if (focusedEdge) {
+    keepN = new Set([focusedEdge.from, focusedEdge.to]);
+    // Match the exact edge by its stable key so clicking one of several edges
+    // between the same endpoints highlights only that one.
+    keepEdge = g => g.dataset.ekey === focusedEdge.key;
+  } else {
+    keepN = new Set([focusedNode, ...getNeighbors(focusedNode)]);
+    keepEdge = g => g.dataset.from === focusedNode || g.dataset.to === focusedNode;
+  }
+  nodeEls.forEach(g => {
+    const keep = keepN.has(g.dataset.id);
+    g.classList.toggle('hi', keep);
+    g.classList.toggle('dim', !keep);
+  });
+  edgeEls.forEach(g => {
+    const keep = keepEdge(g);
+    g.classList.toggle('hi', keep);
+    g.classList.toggle('dim', !keep);
+  });
+}
+
+function focusNode(id) {
+  focusedNode = id;
+  focusedEdge = null;
+  applyFocus();
+}
+
+function focusEdge(edge) {
+  focusedEdge = { from: edge.from, to: edge.to, key: edge.key };
+  focusedNode = null;
+  applyFocus();
+}
+
+function clearFocus() {
+  focusedNode = null;
+  focusedEdge = null;
+  applyFocus();               // class-only — never triggers a full render()
+}
+
+function onWheel(ev) {
+  ev.preventDefault();
+  const svg = document.getElementById('diagram');
+  const s = svg.getBoundingClientRect();
+  if (ev.ctrlKey || ev.metaKey) {                    // ctrl/⌘ + wheel → zoom at cursor
+    const mx = ev.clientX - s.left, my = ev.clientY - s.top;
+    const wx = (mx - panX) / zoomK, wy = (my - panY) / zoomK;
+    const f = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+    zoomK = Math.max(0.12, Math.min(3, zoomK * f));
+    panX = mx - wx * zoomK; panY = my - wy * zoomK;
+    applyViewport();
+    return;
+  }
+  // deltaMode: 0=pixels, 1=lines, 2=pages → normalize to pixels.
+  const u = ev.deltaMode === 1 ? 16 : (ev.deltaMode === 2 ? s.height : 1);
+  const dx = ev.deltaX * u, dy = ev.deltaY * u;
+  if (ev.shiftKey) panX -= (dx || dy);               // shift → horizontal
+  else { panX -= dx; panY -= dy; }                   // wheel → 2D pan
+  applyViewport();
+}
+
+function initViewport() {
+  const svg = document.getElementById('diagram');
+
+  svg.addEventListener('wheel', onWheel, { passive: false });
+
+  // Right-drag / Space-drag = hand tool. contextmenu suppressed on the diagram only.
+  svg.addEventListener('contextmenu', ev => ev.preventDefault());
+
+  svg.addEventListener('pointerdown', ev => {
+    panMoved = false;                 // reset on ANY pointerdown so a stale flag
+                                      // from a prior right-drag can't swallow the next click
+    if (!isPanGesture(ev)) return;
+    ev.preventDefault();
+    panning = { x: ev.clientX, y: ev.clientY, px: panX, py: panY };
+    svg.classList.add('panning');
+    try { svg.setPointerCapture(ev.pointerId); } catch {}
+  });
+  svg.addEventListener('pointermove', ev => {
+    if (dragNode) { onNodeDragMove(ev); return; }   // node drag takes priority over pan
+    if (!panning) return;
+    if (Math.abs(ev.clientX - panning.x) + Math.abs(ev.clientY - panning.y) > 4) panMoved = true;
+    panX = panning.px + (ev.clientX - panning.x);
+    panY = panning.py + (ev.clientY - panning.y);
+    applyViewport();
+  });
+  const endGesture = () => {
+    if (dragNode) endNodeDrag();
+    if (!panning) return;
+    panning = null;
+    svg.classList.remove('panning');
+    if (spaceDown) svg.classList.add('grab');
+  };
+  svg.addEventListener('pointerup', endGesture);
+  svg.addEventListener('pointercancel', endGesture);
+  // Safety net: a node drag captures the pointer only once it crosses the 4px
+  // threshold. A pointerdown-on-node whose pointerup lands OUTSIDE the SVG (before
+  // capture) would otherwise never reach endGesture and leave dragNode stuck.
+  // endNodeDrag/panning both self-guard, so this is a no-op for unrelated pointerups.
+  window.addEventListener('pointerup', endGesture);
+  window.addEventListener('pointercancel', endGesture);
+
+  // Swallow the click a pan/drag gesture emits (capture phase, before node handlers).
+  svg.addEventListener('click', ev => {
+    if (panMoved) { ev.stopPropagation(); ev.preventDefault(); panMoved = false; }
+  }, true);
+
+  // Background click on empty canvas clears focus. Node/edge handlers
+  // stopPropagation so only true background clicks reach here; a pan on empty
+  // canvas sets panMoved and is ignored.
+  svg.addEventListener('click', () => {
+    if (panMoved) return;
+    clearFocus();
+  });
+
+  // Space = hand tool, but never when typing in the sidebar search.
+  window.addEventListener('keydown', ev => {
+    if (ev.code !== 'Space') return;
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
+    if (!spaceDown) { spaceDown = true; svg.classList.add('grab'); }
+    ev.preventDefault();
+  });
+  window.addEventListener('keyup', ev => {
+    if (ev.code !== 'Space') return;
+    spaceDown = false;
+    svg.classList.remove('grab');
+    if (!panning) svg.classList.remove('panning');
+  });
+  // If the window loses focus mid-hold, the keyup never arrives — reset the
+  // hand-tool state so Space can't stick as permanently-held.
+  window.addEventListener('blur', () => {
+    spaceDown = false;
+    panning = null;
+    svg.classList.remove('grab', 'panning');
+  });
 }
 
 async function init() {
@@ -2220,13 +2758,22 @@ async function init() {
   DOMAIN_ORDER = DATA.domains.map(d => d.id);
   DOMAIN_COLORS = Object.fromEntries(DATA.domains.map(d => [d.id, d.color]));
 
-  computePositions();
+  // Arbitration decisions must be loaded before the first paint (proposed nodes
+  // render their ignored/overruled state from them). Layout doesn't depend on it.
+  if (DATA.__hasProposed) {
+    loadArbitration();
+    document.getElementById('export-proposal-btn').style.display = '';
+  }
+
   buildInverseRelations();
-  setSVGSize();
   setupDefs();
+  applyLayout();
   render();
+  initViewport();
+  fitView();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
+  document.getElementById('fit-btn').addEventListener('click', fitView);
   document.getElementById('sidebar-search').addEventListener('input', (e) => {
     sidebarSearch = e.target.value.trim().toLowerCase();
     renderSidebar();               // sidebar-only filter — the diagram is untouched
@@ -2237,10 +2784,6 @@ async function init() {
   });
   document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
   document.getElementById('export-proposal-btn').addEventListener('click', exportProposal);
-  if (DATA.__hasProposed) {
-    loadArbitration();
-    document.getElementById('export-proposal-btn').style.display = '';
-  }
   const reloadBtn = document.getElementById('reload-data-btn');
   if (window.__BAKED_DATA__) {
     reloadBtn.style.display = 'none';
@@ -2249,7 +2792,11 @@ async function init() {
   }
   document.getElementById('detail-close').addEventListener('click', closeDetailPanel);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && openPanelId) closeDetailPanel();
+    if (e.key !== 'Escape') return;
+    // Escape clears focus; if a panel is open it closes it too (closeDetailPanel
+    // also clears focus). Both-at-once is intended.
+    if (openPanelId) closeDetailPanel();
+    else clearFocus();
   });
 }
 

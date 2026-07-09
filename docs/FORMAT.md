@@ -195,11 +195,20 @@ derived for that table.
 
 ### Edge rendering
 
+Cardinality is drawn as **crow's-foot end marks** (fork = "many", tick = "one")
+on the relational types, replacing the old arrowheads. `extends` and
+`polymorphic` keep their directional arrow + dash/dot treatment.
+
 - `belongs_to` — never drawn (the parent's `has_many` covers it).
-- `has_many` / `has_one` — solid arrow, child gets the arrowhead.
-- `many_to_many` — solid line, arrowheads on both ends.
-- `extends` — dashed arrow (parent → extension table).
-- `polymorphic` — dotted arrow to each non-`"*"` target.
+- `has_many` — solid line; **tick** at the parent, **fork** at the child.
+- `has_one` — solid line; **tick** at both ends.
+- `many_to_many` — solid line; **fork** at both ends.
+- `extends` — dashed arrow (parent → extension table); no crow's-foot.
+- `polymorphic` — dotted arrow to each non-`"*"` target; no crow's-foot.
+
+Proposed edges carry the same crow's-foot marks, rendered violet (undashed
+marks). Hover still surfaces the textual cardinality badge; the crow's-feet are
+the always-visible syntax.
 
 ---
 

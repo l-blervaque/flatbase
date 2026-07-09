@@ -1,5 +1,15 @@
 # DB Viewer — Design Spec
 
+> **Superseded (2026-07-09) — interaction model.** The "out of scope" list below
+> (zoom/pan, drag-to-reposition, persistence) and the original static-layout /
+> hide-on-click / scroll-to-node interactions were revised by operator decision.
+> The current interaction model — Fruchterman-Reingold hub-and-spoke layout,
+> persisted positions, viewport pan/zoom + Fit, node drag, focus (dim) mode, and
+> crow's-foot cardinality — is specified in
+> `docs/superpowers/plans/2026-07-09-graph-interaction.md`. This document is kept
+> as the historical record; do not read its interaction/out-of-scope sections as
+> current behaviour.
+
 **Date:** 2026-05-12  
 **Scope:** Single-file HTML/JS/CSS tool to visualize `tables.json`
 
