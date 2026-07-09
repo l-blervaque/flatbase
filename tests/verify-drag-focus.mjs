@@ -194,6 +194,78 @@ const dimWins = await page.evaluate(() => {
 ok('arb-ignored node reads .35 before focus', Math.abs(+ignoredAlone - 0.35) < 1e-6, ignoredAlone);
 ok('dim wins over arb-ignored under focus (.15)', dimWins.dim === true && Math.abs(+dimWins.opacity - 0.15) < 1e-6, JSON.stringify(dimWins));
 
+// ============ SUB-THRESHOLD PRESS DOES NOT MOVE THE NODE (MAJOR-3) ============
+await seed(page, data);
+const subId = await page.evaluate(() => document.querySelector('#node-layer .node').dataset.id);
+const subBefore = await page.evaluate((id) => ({
+  transform: document.querySelector(`#node-layer .node[data-id="${CSS.escape(id)}"]`).getAttribute('transform'),
+  pos: { ...positions[id] },
+}), subId);
+const sc = await nodeCenter(page, subId);
+await page.mouse.move(sc.x, sc.y);
+await page.mouse.down();
+await page.mouse.move(sc.x + 2, sc.y + 1, { steps: 2 });   // < 4px threshold
+await page.mouse.up();
+const subAfter = await page.evaluate((id) => ({
+  transform: document.querySelector(`#node-layer .node[data-id="${CSS.escape(id)}"]`).getAttribute('transform'),
+  pos: { ...positions[id] },
+}), subId);
+ok('sub-threshold press leaves the node transform unchanged', subBefore.transform === subAfter.transform,
+  `${subBefore.transform} vs ${subAfter.transform}`);
+ok('sub-threshold press does not mutate positions in memory',
+  subBefore.pos.x === subAfter.pos.x && subBefore.pos.y === subAfter.pos.y,
+  `${JSON.stringify(subBefore.pos)} vs ${JSON.stringify(subAfter.pos)}`);
+
+// ============ WINDOW BLUR RELEASES THE SPACE HAND-TOOL (MINOR-3) ============
+await page.keyboard.down('Space');
+const spaceHeld = await page.evaluate(() => document.getElementById('diagram').classList.contains('grab'));
+await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+const spaceReleased = await page.evaluate(() => document.getElementById('diagram').classList.contains('grab'));
+await page.keyboard.up('Space');
+ok('Space held adds the grab class', spaceHeld);
+ok('window blur releases the Space hand-tool', spaceReleased === false);
+
+// ============ STALE ARBITRATION DOES NOT SUPPRESS A LIVE EDGE (MAJOR-2) ============
+// A schema with a proposed element (so arbitration loads) + a DEFINED FK edge whose
+// carrying column is NOT proposed. A stale colArb ignore for that column must NOT
+// hide the edge (only proposed columns are arbitrable — matches the export path).
+const staleSchema = JSON.stringify({
+  meta: { project: 'stale-arb' },
+  domains: [{ id: 'd', color: '#4E79A7' }],
+  tables: [
+    { id: 'parent', name: 'Parent', domain: 'd', type: 'entity', columns: [{ name: 'id', pk: true }] },
+    { id: 'child', name: 'Child', domain: 'd', type: 'entity',
+      columns: [{ name: 'id', pk: true }, { name: 'parent_id', fk: 'parent' }] },
+    { id: 'ghost', name: 'Ghost', domain: 'd', type: 'entity', proposed: true,
+      columns: [{ name: 'id', pk: true, proposed: true }] },
+  ],
+});
+await page.goto(URL);
+await page.evaluate((s) => {
+  localStorage.setItem('flatbase.tables.json', s);
+  // Stale entry: parent_id is a baseline (non-proposed) column.
+  localStorage.setItem('flatbase.arbitration.stale-arb', JSON.stringify({ 'child::parent_id': { ignore: true } }));
+}, staleSchema);
+await page.reload();
+await page.waitForSelector('.node', { timeout: 5000 });
+const staleEdgeVisible = await page.evaluate(() => {
+  const e = document.querySelector('#edge-layer .edge[data-from="parent"][data-to="child"], #edge-layer .edge[data-from="child"][data-to="parent"]');
+  return e ? !e.classList.contains('hidden') : null;
+});
+ok('stale arb (non-proposed column) does NOT suppress the edge', staleEdgeVisible === true, `visible=${staleEdgeVisible}`);
+
+// ============ FOCUS CLEARED WHEN THE FOCUSED NODE BECOMES INVISIBLE (MAJOR-5) ============
+await seed(page, fixture);
+await clickNodeEl(page, 'proposed_tbl');
+const focusedBeforeHide = await page.evaluate(() => document.body.classList.contains('focusing'));
+// proposed filter → 'defined' hides proposed_tbl; render() must drop the now-invisible focus.
+await page.selectOption('#proposed-filter', 'defined');
+const afterHide = await page.evaluate(() => ({
+  focusing: document.body.classList.contains('focusing'),
+  dim: document.querySelectorAll('#node-layer .node.dim').length,
+}));
+ok('focusing a node then hiding it clears focus', focusedBeforeHide === true && afterHide.focusing === false && afterHide.dim === 0, JSON.stringify(afterHide));
+
 await page.screenshot({ path: path.join(OUT, 'drag-focus-final.png') });
 await browser.close();
 console.log(results.join('\n'));

@@ -725,6 +725,14 @@ function computePositions() {
   resolveOverlaps(conn, 30, 26, 320);
   packComponents(conn, adj);
   parkIsolated(conn, iso);
+  // The hub is pinned at origin during the FR pass, but the post-passes
+  // (overlap resolution / component packing) can nudge it. Translate the whole
+  // layout so the hub lands exactly at {0,0} — Fit handles screen placement, so
+  // negative world coords are fine and the "hub at origin" invariant holds.
+  if (center && positions[center]) {
+    const cx = positions[center].x, cy = positions[center].y;
+    if (cx || cy) for (const id in positions) { positions[id].x -= cx; positions[id].y -= cy; }
+  }
 }
 
 // Nudge apart any pair of boxes still overlapping after the force pass.
@@ -816,7 +824,7 @@ function loadPositions() {
     const raw = localStorage.getItem(layoutKey());
     if (!raw) return false;
     const saved = JSON.parse(raw);
-    if (DATA.tables.every(t => saved[t.id] && typeof saved[t.id].x === 'number')) {
+    if (DATA.tables.every(t => saved[t.id] && Number.isFinite(saved[t.id].x) && Number.isFinite(saved[t.id].y))) {
       positions = {};
       DATA.tables.forEach(t => { positions[t.id] = { x: saved[t.id].x, y: saved[t.id].y }; });
       return true;
@@ -1187,7 +1195,19 @@ function appendCardinalityBadge(parent, cx, cy, textAnchor, text) {
 }
 
 function collectEdges() {
-  const seen = new Set();
+  // Dedup key distinguishes genuinely-different edges: sorted endpoints + type +
+  // carrying column (via/viaTable). Distinct FK columns between the same pair
+  // (e.g. created_by / updated_by) survive as separate edges, which a plain
+  // endpoint+type key would collapse. `label` is deliberately NOT in the key: a
+  // relation declared from BOTH sides with mismatched labels (e.g. a bidirectional
+  // many_to_many, "contracted" one way / unlabeled the other) is ONE relation and
+  // must merge — including the label would render it as two exactly-overlapping
+  // edges. `proposed` is NOT in the key either: a proposed and a defined edge that
+  // are otherwise identical are the same relation — they MERGE with proposed
+  // priority (proposed || defined), so a proposed edge is never hidden behind a
+  // defined duplicate. The key is stored on the edge (`edge.key`) so edge-focus can
+  // target exactly one of several edges between the same pair.
+  const byKey = new Map();
   const edges = [];
   for (const table of DATA.tables) {
     for (const rel of (table.relations || [])) {
@@ -1197,18 +1217,27 @@ function collectEdges() {
         ? rel.targets.filter(t => t !== '*')
         : rel.target ? [rel.target] : [];
       for (const target of targets) {
-        const key = [table.id, target].sort().join('|') + '|' + rel.type;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        edges.push({
+        const label = rel.label || rel.type;
+        const key = [table.id, target].sort().join('|') + '|' + rel.type +
+                    '|' + (rel.viaTable || '') + '|' + (rel.via || '');
+        const existing = byKey.get(key);
+        if (existing) {
+          // Same relation seen from both sides / duplicated: keep proposed if either is.
+          existing.proposed = existing.proposed || !!rel.proposed;
+          continue;
+        }
+        const edge = {
           from: table.id,
           to: target,
           type: rel.type,
-          label: rel.label || rel.type,
+          label,
           proposed: !!rel.proposed,
           via: rel.via,
           viaTable: rel.viaTable,
-        });
+          key,
+        };
+        byKey.set(key, edge);
+        edges.push(edge);
       }
     }
   }
@@ -1285,8 +1314,18 @@ function renderEdges(visibleIds) {
     // An edge is dropped from view when its carrying FK column is arb-ignored, or when
     // either endpoint is an arb-ignored proposed table.
     const tableIgnored = id => { const t = DATA.tables.find(x => x.id === id); return !!(t && t.proposed && tableArb(id).ignore); };
+    // A column arb entry only suppresses the edge when the carrying column is STILL
+    // proposed — matching the export path (only proposed columns are arbitrable), so
+    // a stale arb key for a since-de-proposed column never hides a live edge.
+    const viaColProposed = (tid, name) => {
+      const t = DATA.tables.find(x => x.id === tid);
+      if (!t || !Array.isArray(t.columns)) return false;
+      const col = t.columns.find(c => (typeof c === 'object' ? c.name : c) === name);
+      return !!(col && typeof col === 'object' && col.proposed);
+    };
     const arbSuppressed =
-      (edge.via && edge.viaTable && colArb(edge.viaTable, edge.via).ignore) ||
+      (edge.via && edge.viaTable && viaColProposed(edge.viaTable, edge.via)
+        && colArb(edge.viaTable, edge.via).ignore) ||
       tableIgnored(edge.from) || tableIgnored(edge.to);
 
     const geo = edgeGeometry(edge);
@@ -1296,6 +1335,7 @@ function renderEdges(visibleIds) {
     g.classList.add('edge');
     g.dataset.from = edge.from;
     g.dataset.to = edge.to;
+    g.dataset.ekey = edge.key; // stable per-edge key (edge-focus targets one of parallels)
     g.__edge = edge;            // edge index: element → edge (for incident redraw)
     if (!bothVisible || arbSuppressed) g.classList.add('hidden');
 
@@ -1926,7 +1966,17 @@ function render() {
   renderNodes();
   renderSidebar();
   renderDomainFilters();
+  pruneFocusIfHidden();       // a selection that became invisible must not dim the graph
   applyFocus();               // re-apply .dim/.hi to the freshly rebuilt DOM
+}
+
+// Clear focus when the focused node (or either endpoint of the focused edge) is no
+// longer visible — otherwise a proposed-filter / domain toggle / hide would dim the
+// whole visible graph around a selection the user can no longer see.
+function pruneFocusIfHidden() {
+  const vis = new Set(getVisibleIds());
+  if (focusedNode != null && !vis.has(focusedNode)) focusedNode = null;
+  if (focusedEdge != null && !(vis.has(focusedEdge.from) && vis.has(focusedEdge.to))) focusedEdge = null;
 }
 
 function resetState() {
@@ -2511,15 +2561,17 @@ function startNodeDrag(ev, id) {
 
 // Called from the SVG pointermove handler while a node drag is live.
 function onNodeDragMove(ev) {
-  if (Math.abs(ev.clientX - dragNode.sx) + Math.abs(ev.clientY - dragNode.sy) > 4) {
-    if (!dragNode.moved) {
-      dragNode.moved = true;
-      // Capture lazily — only once the drag is real — so a plain click never
-      // retargets and still dispatches to the node handler.
-      try { document.getElementById('diagram').setPointerCapture(dragNode.pointerId); } catch {}
-    }
-    panMoved = true;                 // swallow the click this gesture will emit
+  // Below the 4px threshold this is still a potential *click*: don't touch
+  // positions at all (a sub-threshold press must never move the node in memory),
+  // don't capture, don't schedule a redraw.
+  if (Math.abs(ev.clientX - dragNode.sx) + Math.abs(ev.clientY - dragNode.sy) <= 4) return;
+  if (!dragNode.moved) {
+    dragNode.moved = true;
+    // Capture lazily — only once the drag is real — so a plain click never
+    // retargets and still dispatches to the node handler.
+    try { document.getElementById('diagram').setPointerCapture(dragNode.pointerId); } catch {}
   }
+  panMoved = true;                 // swallow the click this gesture will emit
   const w = screenToWorld(ev.clientX, ev.clientY);
   positions[dragNode.id].x = w.x - dragNode.dx;
   positions[dragNode.id].y = w.y - dragNode.dy;
@@ -2535,6 +2587,7 @@ function onNodeDragMove(ev) {
 
 // Called from the SVG pointerup/pointercancel handler to finish a node drag.
 function endNodeDrag() {
+  if (!dragNode) return;                   // idempotent: window + SVG pointerup both fire
   if (dragRAF) { cancelAnimationFrame(dragRAF); dragRAF = null; }
   const moved = dragNode.moved;
   try { document.getElementById('diagram').releasePointerCapture(dragNode.pointerId); } catch {}
@@ -2564,12 +2617,13 @@ function applyFocus() {
   document.body.classList.add('focusing');
   let keepN, keepEdge;
   if (focusedEdge) {
-    const { from, to } = focusedEdge;
-    keepN = new Set([from, to]);
-    keepEdge = (f, t) => (f === from && t === to) || (f === to && t === from);
+    keepN = new Set([focusedEdge.from, focusedEdge.to]);
+    // Match the exact edge by its stable key so clicking one of several edges
+    // between the same endpoints highlights only that one.
+    keepEdge = g => g.dataset.ekey === focusedEdge.key;
   } else {
     keepN = new Set([focusedNode, ...getNeighbors(focusedNode)]);
-    keepEdge = (f, t) => f === focusedNode || t === focusedNode;
+    keepEdge = g => g.dataset.from === focusedNode || g.dataset.to === focusedNode;
   }
   nodeEls.forEach(g => {
     const keep = keepN.has(g.dataset.id);
@@ -2577,7 +2631,7 @@ function applyFocus() {
     g.classList.toggle('dim', !keep);
   });
   edgeEls.forEach(g => {
-    const keep = keepEdge(g.dataset.from, g.dataset.to);
+    const keep = keepEdge(g);
     g.classList.toggle('hi', keep);
     g.classList.toggle('dim', !keep);
   });
@@ -2590,7 +2644,7 @@ function focusNode(id) {
 }
 
 function focusEdge(edge) {
-  focusedEdge = { from: edge.from, to: edge.to };
+  focusedEdge = { from: edge.from, to: edge.to, key: edge.key };
   focusedNode = null;
   applyFocus();
 }
@@ -2656,6 +2710,12 @@ function initViewport() {
   };
   svg.addEventListener('pointerup', endGesture);
   svg.addEventListener('pointercancel', endGesture);
+  // Safety net: a node drag captures the pointer only once it crosses the 4px
+  // threshold. A pointerdown-on-node whose pointerup lands OUTSIDE the SVG (before
+  // capture) would otherwise never reach endGesture and leave dragNode stuck.
+  // endNodeDrag/panning both self-guard, so this is a no-op for unrelated pointerups.
+  window.addEventListener('pointerup', endGesture);
+  window.addEventListener('pointercancel', endGesture);
 
   // Swallow the click a pan/drag gesture emits (capture phase, before node handlers).
   svg.addEventListener('click', ev => {
@@ -2683,6 +2743,13 @@ function initViewport() {
     spaceDown = false;
     svg.classList.remove('grab');
     if (!panning) svg.classList.remove('panning');
+  });
+  // If the window loses focus mid-hold, the keyup never arrives — reset the
+  // hand-tool state so Space can't stick as permanently-held.
+  window.addEventListener('blur', () => {
+    spaceDown = false;
+    panning = null;
+    svg.classList.remove('grab', 'panning');
   });
 }
 

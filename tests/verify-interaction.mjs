@@ -75,6 +75,22 @@ const hub = await page.evaluate(() => {
   ok('hub neighbors within graph diameter', hub.neighbors.length > 0 && maxNb < diameter, `hub=${hub.best} deg=${hub.neighbors.length} maxNb=${maxNb.toFixed(0)} diam=${diameter.toFixed(0)}`);
 }
 
+// --- 2b. Hub pinned at world origin AFTER post-passes (resolveOverlaps/packComponents
+// can nudge it). Compute twice, then assert the max-degree connected node is at {0,0}.
+const hubOrigin = await page.evaluate(() => {
+  computePositions(); computePositions();
+  const adj = {}; DATA.tables.forEach(t => (adj[t.id] = new Set()));
+  for (const e of collectEdges()) {
+    if (e.from === e.to || !adj[e.from] || !adj[e.to]) continue;
+    adj[e.from].add(e.to); adj[e.to].add(e.from);
+  }
+  const conn = DATA.tables.map(t => t.id).filter(id => adj[id].size > 0);
+  const center = conn.reduce((a, b) => (adj[b].size > adj[a].size ? b : a), conn[0]);
+  const p = positions[center];
+  return { center, x: p.x, y: p.y };
+});
+ok('hub sits exactly at world origin after layout', hubOrigin.x === 0 && hubOrigin.y === 0, JSON.stringify(hubOrigin));
+
 // --- 3. Saved layout honored on reload (persistence path).
 const shifted = Object.fromEntries(Object.entries(P2).map(([id, p]) => [id, { x: p.x + 1000, y: p.y + 500 }]));
 await page.evaluate(({ k, s }) => localStorage.setItem(k, JSON.stringify(s)), { k: layoutKey, s: shifted });

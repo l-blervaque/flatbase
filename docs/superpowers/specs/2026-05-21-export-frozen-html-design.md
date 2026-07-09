@@ -105,6 +105,8 @@ These are explicit non-goals, kept here to prevent scope drift during implementa
 
   Note: `computePositions` currently calls `Math.random()` once per pair when nodes overlap exactly. This is the only nondeterminism; in practice it is unobservable across loads of identical data. Treating layout persistence as out-of-scope means this is acceptable.
 
+  > **Superseded (2026-07-09).** The graph-interaction work (`docs/superpowers/plans/2026-07-09-graph-interaction.md`) added deterministic Fruchterman-Reingold layout with a seeded PRNG (no `Math.random` anywhere in the layout path) and per-project layout **persistence** (`localStorage` key `flatbase.layout.<project>.<schema-sig>`, saved on drag/reset, cleared by `↻ Data`). Manual arrangements now survive reloads, including in frozen exports. The paragraph above describes the original (pre-interaction) behaviour and is kept for history only.
+
 ## Risks and mitigations
 
 | Risk                                                              | Mitigation                                                                                       |
