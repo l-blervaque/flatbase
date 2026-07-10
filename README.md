@@ -4,6 +4,10 @@ Single-file HTML database viewer — JSON source of truth, zero dependencies.
 
 Drop a schema (one file or a folder), get a navigable diagram: sidebar table list, force-directed ER graph, click-through detail panel with columns, types, FK navigation, relation arrows. Then click **↓ Export** to bake the current schema into a self-contained `.html` you can drop anywhere — `file://`, GitHub Pages, attached to an email — with no setup on the other end.
 
+**[▶ Live demo](https://l-blervaque.github.io/flatbase/)** — the viewer preloaded with the sample bookstore schema.
+
+[![flatbase demo — bookstore schema rendered as a navigable ER diagram](docs/demo.gif)](https://l-blervaque.github.io/flatbase/)
+
 ## Why
 
 Most schema viewers want a server, a build step, an account, or all three. flatbase is one HTML file. You open it. You drop your schema. You read your schema. If you want to share it, you export a frozen copy and send the `.html`.
@@ -74,11 +78,29 @@ Quick taste — a minimal pair of tables:
 
 Relations are derived from `columns[].fk` automatically. Override or extend with explicit `relations` if you need polymorphic, m2m, extends, etc.
 
+## Converters
+
+Already have a schema? `converters/` ships standalone Python scripts (stdlib only, no
+pip) that turn it into flatbase JSON:
+
+| Source | Script |
+|---|---|
+| SQL DDL (PostgreSQL / MySQL / SQLite) | `python3 converters/sql_ddl.py schema.sql > tables.json` |
+| Prisma | `python3 converters/prisma.py schema.prisma > tables.json` |
+| Rails `schema.rb` | `python3 converters/rails_schema.py schema.rb > tables.json` |
+| DBML (dbdiagram.io) | `python3 converters/dbml.py schema.dbml > tables.json` |
+| Django `models.py` | `python3 converters/django_models.py models.py > tables.json` |
+
+See [`converters/README.md`](converters/README.md) for multi-file/domain handling.
+
 ## Repo layout
 
 ```
-db-viewer.html           Viewer (the whole product, ~1600 lines)
+db-viewer.html           Viewer (the whole product, single file)
+index.html               Live-demo build (viewer + baked sample schema)
 tables.json.example      Sample bookstore schema exercising every relation type
+converters/              Existing schema → flatbase JSON (SQL, Prisma, Rails, DBML, Django)
+tools/make-demo.py       Regenerates index.html from viewer + sample schema
 docs/FORMAT.md           Canonical schema format reference
 CLAUDE.md                Project guidance for Claude Code / agents
 ```
@@ -87,4 +109,8 @@ CLAUDE.md                Project guidance for Claude Code / agents
 
 ## Status
 
-Used in anger for the Active.
+Used in anger on real production schemas (dozens of tables across multiple domains).
+
+## License
+
+[MIT](LICENSE)
