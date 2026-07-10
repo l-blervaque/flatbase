@@ -210,6 +210,46 @@ Proposed edges carry the same crow's-foot marks, rendered violet (undashed
 marks). Hover still surfaces the textual cardinality badge; the crow's-feet are
 the always-visible syntax.
 
+### Logical mode rendering
+
+The viewer has a **Conceptual | Logical** header toggle. Conceptual mode
+renders the compact nodes described above; Logical mode renders each table as
+an ER-style box driven by `columns`:
+
+- **Node anatomy** — a domain-tinted header band (table `name` + small
+  `name_ja`), then one row per column: a key badge (`PK` gold, `FK` blue) +
+  the column name, with zebra striping. Plain-string columns render as a
+  name-only row. Proposed columns render violet, `status: "inferred"` italic,
+  arbitration-ignored ones struck through. A table without `columns` renders
+  as a header-only box.
+- **Row cap** — at most **12** column rows are shown; the rest collapse into a
+  final `… +N more` summary row (the detail panel remains the full view).
+  Displayed rows are reordered: **PK columns first, then FK columns (schema
+  order), then the rest (schema order)** — so key columns survive the cap. An
+  FK column only overflows the cap when more than 11 pk+fk columns precede it.
+- **Field-anchored edges** — an edge anchors to a column row **only when it
+  knows its carrying FK column**, i.e. when it was **derived** from
+  `columns[].fk` / `columns[].polymorphic` (derivation stamps `via`/`viaTable`
+  on the relation). That end anchors at the FK column's row (left or right box
+  side by relative node position); the other end anchors at the target's first
+  `pk` column row (header band when no PK is identifiable). A capped column
+  anchors at the `… +N more` row. **Explicit `relations` entries anchor
+  header-to-header**, even when matching FK columns exist as rows — to get
+  field anchoring, omit `relations` and let the viewer derive them. (Note:
+  `tables.json.example` uses explicit `relations` on several tables, so the
+  sample only partially demonstrates field anchoring.) Self-relations keep a
+  loop bulging out of the right side of the box, not row-anchored.
+  Crow's-foot marks render at the row anchors.
+- **Row highlight on focus** — focusing an edge lights the anchored FK/PK rows
+  on both ends (amber row background + bold name); focusing a node lights the
+  rows of every visible incident edge. The same resolver drives the anchor
+  geometry and the highlight, so the lit rows are exactly the anchored rows.
+  Header-anchored (explicit) edges light no rows.
+
+The mode is a viewing preference persisted in `localStorage`
+(`flatbase.viewmode`), and layout positions persist per mode — see the
+project docs for the keys.
+
 ---
 
 ## Enums
