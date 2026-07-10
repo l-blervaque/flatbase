@@ -80,7 +80,6 @@ Relations are derived from `columns[].fk` automatically. Override or extend with
 db-viewer.html           Viewer (the whole product, ~1600 lines)
 tables.json.example      Sample bookstore schema exercising every relation type
 docs/FORMAT.md           Canonical schema format reference
-docs/superpowers/        Design specs and implementation plans
 CLAUDE.md                Project guidance for Claude Code / agents
 ```
 
