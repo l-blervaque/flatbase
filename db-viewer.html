@@ -91,6 +91,11 @@
     .node.logical .lg-stripe { fill: #000; opacity: 0.04; }
     .node.logical .lg-overflow { font-size: 9.5px; fill: #94a3b8; font-style: italic; }
     .node.logical .lg-rowhi { fill: #f59e0b; opacity: 0; pointer-events: none; }
+    /* Row highlight under focus: amber background fill + bold column name. The fill
+       lives on the background rect so text colour semantics (proposed-violet,
+       inferred-italic, ignored-strikethrough) are never overwritten. */
+    .node.logical .lg-rowhi.row-hi { opacity: 0.3; }
+    .node.logical .lg-col.row-hi { font-weight: 700; }
 
     #main {
       display: flex;
@@ -613,6 +618,47 @@ function logicalRows(t) {
   const ordered = pk.concat(fk, rest);
   if (ordered.length <= LOG_ROWCAP) return { rows: ordered, overflow: 0, all: ordered };
   return { rows: ordered.slice(0, LOG_ROWCAP), overflow: ordered.length - LOG_ROWCAP, all: ordered };
+}
+
+// Row LOCAL center-Y (in the node group) for a column, mirroring renderLogicalBody /
+// nodeRowEls exactly: a capped column resolves to the overflow row. Pure function of
+// the model, so edgeGeometry (which runs before renderNodes) can anchor to rows.
+function logicalRowCY(t, colName) {
+  const { rows, overflow } = logicalRows(t);
+  const idx = rows.findIndex(r => r.c.name === colName);
+  if (idx >= 0) return LOG_HEADER + idx * LOG_ROWH + LOG_ROWH / 2;
+  if (overflow > 0 && tableColumns(t).some(col => colObj(col).name === colName))
+    return LOG_HEADER + rows.length * LOG_ROWH + LOG_ROWH / 2;  // capped → overflow row
+  return null;
+}
+function firstPkName(t) {
+  for (const col of tableColumns(t)) { const c = colObj(col); if (c.pk) return c.name; }
+  return null;
+}
+// The ONE resolver of "which column row does `endId` anchor to" — shared by the
+// edge geometry (row Y) and the focus row highlight, so anchor and highlight can
+// never drift. The via/viaTable end anchors at its FK column; the other end at the
+// target's PK column when one exists. null → header band (edges without via, or an
+// unresolvable column).
+function anchorColName(edge, endId, endT) {
+  if (!edge.via || !edge.viaTable) return null;
+  if (edge.viaTable === endId) return logicalRowCY(endT, edge.via) != null ? edge.via : null;
+  const pk = firstPkName(endT);
+  return pk && logicalRowCY(endT, pk) != null ? pk : null;
+}
+// Field-anchored endpoints for a logical-mode edge. L/R side per endpoint by relative
+// node-center X (like the reference fieldAnchor); the anchored column resolves to its
+// row world-Y, else the header band center.
+function logicalAnchors(edge, fromPos, toPos, fromT, toT) {
+  const sideFrom = (fromPos.x + LOG_W / 2) <= (toPos.x + LOG_W / 2) ? 'right' : 'left';
+  const sideTo   = sideFrom === 'right' ? 'left' : 'right';
+  const endY = (pos, t, name) => pos.y + (name != null ? logicalRowCY(t, name) : LOG_HEADER / 2);
+  const fName = anchorColName(edge, edge.from, fromT);
+  const tName = anchorColName(edge, edge.to, toT);
+  return {
+    from: { x: sideFrom === 'right' ? fromPos.x + LOG_W : fromPos.x, y: endY(fromPos, fromT, fName), side: sideFrom },
+    to:   { x: sideTo   === 'right' ? toPos.x   + LOG_W : toPos.x,   y: endY(toPos,   toT,   tName), side: sideTo   },
+  };
 }
 
 function updateModeToggleUI() {
@@ -1489,7 +1535,10 @@ function edgeGeometry(edge) {
     cx2 = right + LOOP_OUT; cy2 = yBot + LOOP_FLARE;
     fromSide = 'right'; toSide = 'right';
   } else {
-    const { from: a, to: b } = computeAnchors(fromPos, toPos, TBY[edge.from], TBY[edge.to]);
+    const a_b = viewMode === 'logical'
+      ? logicalAnchors(edge, fromPos, toPos, TBY[edge.from], TBY[edge.to])
+      : computeAnchors(fromPos, toPos, TBY[edge.from], TBY[edge.to]);
+    const a = a_b.from, b = a_b.to;
     x1 = a.x; y1 = a.y;
     x2 = b.x; y2 = b.y;
     fromSide = a.side; toSide = b.side;
@@ -2847,6 +2896,7 @@ function applyFocus() {
     document.body.classList.remove('focusing');
     nodeEls.forEach(g => g.classList.remove('dim', 'hi'));
     edgeEls.forEach(g => g.classList.remove('dim', 'hi'));
+    clearRowHi();
     return;
   }
   document.body.classList.add('focusing');
@@ -2870,6 +2920,42 @@ function applyFocus() {
     g.classList.toggle('hi', keep);
     g.classList.toggle('dim', !keep);
   });
+  // Logical mode: light the FK/PK rows the kept (visible) edges anchor to. Same
+  // anchorColName resolver as the geometry, so the highlighted rows are exactly the
+  // anchored rows. No-op in conceptual (nodeRowEls is {}).
+  clearRowHi();
+  if (viewMode === 'logical') {
+    edgeEls.forEach(g => {
+      if (!keepEdge(g) || g.classList.contains('hidden') || !g.__edge) return;
+      const e = g.__edge;
+      addRowHi(e.from, anchorColName(e, e.from, TBY[e.from]));
+      addRowHi(e.to, anchorColName(e, e.to, TBY[e.to]));
+    });
+  }
+}
+
+// Focus row highlight (logical): amber background rect + bold column name. Uses the
+// live DOM refs in nodeRowEls (populated by renderNodes). A capped column resolves to
+// the overflow row, which has no dedicated refs — its geometric anchor still lands
+// there, but there is nothing to bold, so addRowHi is a safe no-op for it.
+function addRowHi(tid, colName) {
+  if (!colName) return;
+  const rec = nodeRowEls[tid];
+  if (!rec) return;
+  const r = rec.byName[colName];
+  if (!r) return;
+  if (r.fr) r.fr.classList.add('row-hi');
+  if (r.name) r.name.classList.add('row-hi');
+}
+function clearRowHi() {
+  for (const tid in nodeRowEls) {
+    const rec = nodeRowEls[tid];
+    for (const nm in rec.byName) {
+      const r = rec.byName[nm];
+      if (r.fr) r.fr.classList.remove('row-hi');
+      if (r.name) r.name.classList.remove('row-hi');
+    }
+  }
 }
 
 function focusNode(id) {

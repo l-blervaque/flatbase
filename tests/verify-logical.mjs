@@ -181,5 +181,229 @@ const frozen = await page2.evaluate(() => {
 });
 ok('frozen export: working toggle', frozen.hasToggle && frozen.conc && frozen.log, JSON.stringify(frozen));
 
+// ---------------------------------------------------------------------------
+// P2 — field-anchored edges + FK/PK row highlight + crow's-foot at row anchors
+// ---------------------------------------------------------------------------
+const nums = d => (d.match(/-?\d+\.?\d*/g) || []).map(Number);
+const start = d => { const n = nums(d); return { x: n[0], y: n[1] }; };
+const end = d => { const n = nums(d); return { x: n[n.length - 2], y: n[n.length - 1] }; };
+const near = (a, b, tol = 1.0) => Math.abs(a - b) <= tol;
+
+// Controlled 2-table fixture: parent(id pk, name) 1—N child(id pk, parent_id fk, note).
+// logicalRows order = pk first, then fk: child.parent_id lands at ordered idx 1.
+const anchorData = JSON.stringify({
+  meta: { project: 'anchors' },
+  tables: [
+    { id: 'parent', name: 'Parent', domain: 'd', type: 'entity',
+      columns: [{ name: 'id', pk: true }, { name: 'name' }] },
+    { id: 'child', name: 'Child', domain: 'd', type: 'entity',
+      columns: [{ name: 'id', pk: true }, { name: 'parent_id', fk: 'parent' }, { name: 'note' }] },
+  ],
+});
+await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.viewmode', 'logical'); localStorage.setItem('flatbase.tables.json', f); }, anchorData);
+await page.reload();
+await page.waitForSelector('.node.logical', { timeout: 5000 });
+
+const K = await page.evaluate(() => ({ H: LOG_HEADER, RH: LOG_ROWH, W: LOG_W }));
+const rowCY = idx => K.H + idx * K.RH + K.RH / 2;   // local center-Y of ordered row idx
+
+// 11. FK end lands at the FK row Y; PK end lands at the PK row Y (assert on hit-path,
+//     whose d is the untrimmed geometry — exact in both X and Y).
+const fkEdge = await page.evaluate(() => {
+  const g = [...document.querySelectorAll('#edge-layer .edge')].find(g => g.__edge && g.__edge.via === 'parent_id');
+  const e = g.__edge;
+  return { from: e.from, to: e.to, hitD: g.querySelector('path.hit-path').getAttribute('d'),
+           pFrom: positions[e.from], pTo: positions[e.to] };
+});
+{
+  // from = parent (anchors at parent pk 'id', ordered idx 0), to = child (parent_id, idx 1)
+  const s = start(fkEdge.hitD), en = end(fkEdge.hitD);
+  const expFromY = fkEdge.pFrom.y + rowCY(0);
+  const expToY = fkEdge.pTo.y + rowCY(1);
+  const sideFromRight = (fkEdge.pFrom.x + K.W / 2) <= (fkEdge.pTo.x + K.W / 2);
+  const expFromX = sideFromRight ? fkEdge.pFrom.x + K.W : fkEdge.pFrom.x;
+  const expToX = sideFromRight ? fkEdge.pTo.x : fkEdge.pTo.x + K.W;
+  ok('logical FK end anchors at FK row Y', near(en.y, expToY) && near(en.x, expToX),
+     `got ${JSON.stringify(en)} exp {x:${expToX.toFixed(1)},y:${expToY.toFixed(1)}}`);
+  ok('logical PK end anchors at PK row Y', near(s.y, expFromY) && near(s.x, expFromX),
+     `got ${JSON.stringify(s)} exp {x:${expFromX.toFixed(1)},y:${expFromY.toFixed(1)}}`);
+}
+
+// 12. Crow's-foot fork present at the child (many) row anchor; tick at parent (one) end.
+const marks = await page.evaluate(() => {
+  const g = [...document.querySelectorAll('#edge-layer .edge')].find(g => g.__edge && g.__edge.via === 'parent_id');
+  return {
+    to: (g.querySelector('.edge-marker[data-end="to"]') || {}).getAttribute ? g.querySelector('.edge-marker[data-end="to"]').getAttribute('d') : '',
+    from: (g.querySelector('.edge-marker[data-end="from"]') || {}).getAttribute ? g.querySelector('.edge-marker[data-end="from"]').getAttribute('d') : '',
+  };
+});
+{
+  const forkAtToRow = (marks.to.match(/M/g) || []).length >= 3 && near(end(marks.to).y, fkEdge.pTo.y + rowCY(1), 12);
+  ok('crow\'s-foot fork at FK row anchor', forkAtToRow, JSON.stringify(marks.to));
+}
+
+// 13. Drag the child node → the FK endpoint follows the row (redrawIncidentEdges path).
+const dragged = await page.evaluate(() => {
+  const cy0 = positions['child'].y;
+  positions['child'].y = cy0 + 250;
+  positions['child'].x = positions['child'].x + 40;
+  redrawIncidentEdges('child');
+  const g = [...document.querySelectorAll('#edge-layer .edge')].find(g => g.__edge && g.__edge.via === 'parent_id');
+  return { hitD: g.querySelector('path.hit-path').getAttribute('d'), pTo: positions['child'] };
+});
+{
+  const en = end(dragged.hitD);
+  ok('drag: FK endpoint follows the row', near(en.y, dragged.pTo.y + rowCY(1)),
+     `got ${en.y.toFixed(1)} exp ${(dragged.pTo.y + rowCY(1)).toFixed(1)}`);
+}
+
+// 14. Edge without via anchors header-to-header (explicit has_many, no FK column).
+const noViaData = JSON.stringify({
+  meta: { project: 'noVia' },
+  tables: [
+    { id: 'p', name: 'P', domain: 'd', type: 'entity', columns: [{ name: 'id', pk: true }, { name: 'a' }],
+      relations: [{ type: 'has_many', target: 'q' }] },
+    { id: 'q', name: 'Q', domain: 'd', type: 'entity', columns: [{ name: 'id', pk: true }, { name: 'b' }] },
+  ],
+});
+await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.viewmode', 'logical'); localStorage.setItem('flatbase.tables.json', f); }, noViaData);
+await page.reload();
+await page.waitForSelector('.node.logical', { timeout: 5000 });
+const noVia = await page.evaluate(() => {
+  const g = [...document.querySelectorAll('#edge-layer .edge')].find(g => g.__edge && g.__edge.from === 'p' && g.__edge.to === 'q');
+  const e = g.__edge;
+  return { hasVia: !!e.via, hitD: g.querySelector('path.hit-path').getAttribute('d'), pFrom: positions.p, pTo: positions.q, H: LOG_HEADER };
+});
+{
+  const s = start(noVia.hitD), en = end(noVia.hitD);
+  ok('edge without via anchors header-to-header',
+     !noVia.hasVia && near(s.y, noVia.pFrom.y + noVia.H / 2) && near(en.y, noVia.pTo.y + noVia.H / 2),
+     `from ${s.y.toFixed(1)}/${(noVia.pFrom.y + noVia.H / 2).toFixed(1)} to ${en.y.toFixed(1)}/${(noVia.pTo.y + noVia.H / 2).toFixed(1)}`);
+}
+
+// 15. Overflow-column FK anchors at the overflow row Y. 12 FKs to 12 DISTINCT parents
+//     (distinct parents → distinct has_many edges; same-parent FKs would collapse to
+//     one). Ordered rows = pk(id) + f1..f11 (12 rows) → f12 overflows.
+const ovData = JSON.stringify({
+  meta: { project: 'ovfk' },
+  tables: [
+    ...Array.from({ length: 12 }, (_, i) => ({ id: 'p' + (i + 1), name: 'P' + (i + 1), domain: 'd', type: 'entity', columns: [{ name: 'id', pk: true }] })),
+    { id: 'ch', name: 'Ch', domain: 'd', type: 'entity',
+      columns: [{ name: 'id', pk: true }, ...Array.from({ length: 12 }, (_, i) => ({ name: 'f' + (i + 1), fk: 'p' + (i + 1) }))] },
+  ],
+});
+await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.viewmode', 'logical'); localStorage.setItem('flatbase.tables.json', f); }, ovData);
+await page.reload();
+await page.waitForSelector('.node.logical', { timeout: 5000 });
+const ov = await page.evaluate(() => {
+  const g = [...document.querySelectorAll('#edge-layer .edge')].find(g => g.__edge && g.__edge.via === 'f12');
+  if (!g) return null;
+  const rows = logicalRows(DATA.tables.find(t => t.id === 'ch'));
+  return { hitD: g.querySelector('path.hit-path').getAttribute('d'), pTo: positions.ch,
+           rowsLen: rows.rows.length, overflow: rows.overflow, H: LOG_HEADER, RH: LOG_ROWH };
+});
+{
+  const en = end(ov.hitD);
+  const expY = ov.pTo.y + ov.H + ov.rowsLen * ov.RH + ov.RH / 2;   // overflow row local cy
+  ok('overflow-column FK anchors at overflow row Y',
+     ov.overflow > 0 && ov.rowsLen === 12 && near(en.y, expY),
+     `got ${en.y.toFixed(1)} exp ${expY.toFixed(1)} (rows ${ov.rowsLen}, ovf ${ov.overflow})`);
+}
+
+// 16. Focus an edge → both anchored rows carry .row-hi (rect + bold name); clears on
+//     background click.
+await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.viewmode', 'logical'); localStorage.setItem('flatbase.tables.json', f); }, anchorData);
+await page.reload();
+await page.waitForSelector('.node.logical', { timeout: 5000 });
+const efocus = await page.evaluate(() => {
+  const e = collectEdges().find(e => e.via === 'parent_id');
+  focusEdge(e);
+  const childRow = nodeRowEls['child'].byName['parent_id'];
+  const parentRow = nodeRowEls['parent'].byName['id'];
+  const on = {
+    childRect: childRow.fr.classList.contains('row-hi'),
+    childName: childRow.name.classList.contains('row-hi'),
+    parentRect: parentRow.fr.classList.contains('row-hi'),
+    parentName: parentRow.name.classList.contains('row-hi'),
+    // a non-anchored row stays un-highlighted
+    otherName: nodeRowEls['child'].byName['note'].name.classList.contains('row-hi'),
+  };
+  clearFocus();
+  const cleared = !childRow.fr.classList.contains('row-hi') && !parentRow.name.classList.contains('row-hi');
+  return { on, cleared };
+});
+ok('edge focus highlights both anchored rows',
+   efocus.on.childRect && efocus.on.childName && efocus.on.parentRect && efocus.on.parentName && !efocus.on.otherName,
+   JSON.stringify(efocus.on));
+ok('background click clears row highlight', efocus.cleared);
+
+// 17. Focus a node → rows of all incident edges highlighted on both ends.
+const nfocus = await page.evaluate(() => {
+  focusNode('parent');
+  const r = {
+    parentPk: nodeRowEls['parent'].byName['id'].name.classList.contains('row-hi'),
+    childFk: nodeRowEls['child'].byName['parent_id'].name.classList.contains('row-hi'),
+  };
+  clearFocus();
+  return r;
+});
+ok('node focus highlights incident rows on both ends', nfocus.parentPk && nfocus.childFk, JSON.stringify(nfocus));
+
+// 18. Proposed fixture in logical mode: violet edge + violet marks at the violet column row.
+const proposed = fs.readFileSync(path.join(REPO, 'docs/proposed-fixture.json'), 'utf8');
+await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.viewmode', 'logical'); localStorage.setItem('flatbase.tables.json', f); }, proposed);
+await page.reload();
+await page.waitForSelector('.node.logical', { timeout: 5000 });
+const prop = await page.evaluate(() => {
+  const g = [...document.querySelectorAll('#edge-layer .edge')].find(g => g.__edge && g.__edge.via === 'other_tbl_id');
+  if (!g) return null;
+  const e = g.__edge;
+  const line = g.querySelector('path.edge-line');
+  const mk = g.querySelector('.edge-marker');
+  // the FK column row on existing_tbl is proposed → violet lg-col
+  const rec = nodeRowEls['existing_tbl'].byName['other_tbl_id'];
+  const colEl = rec && rec.name;
+  return {
+    proposed: !!e.proposed,
+    lineStroke: line.getAttribute('stroke'),
+    markStroke: mk ? mk.getAttribute('stroke') : null,
+    colViolet: colEl ? colEl.classList.contains('proposed') : false,
+    anchorD: g.querySelector('path.hit-path').getAttribute('d'),
+    pTo: positions['existing_tbl'], rowCY: rec ? rec.cy : null,
+  };
+});
+{
+  const en = end(prop.anchorD);
+  const violet = '#8b5cf6';
+  ok('proposed edge in logical: violet line + marks',
+     prop.proposed && prop.lineStroke === violet && prop.markStroke === violet && prop.colViolet,
+     JSON.stringify({ line: prop.lineStroke, mark: prop.markStroke, colViolet: prop.colViolet }));
+  ok('proposed edge anchors at its violet column row', near(en.y, prop.pTo.y + prop.rowCY),
+     `got ${en.y.toFixed(1)} exp ${(prop.pTo.y + prop.rowCY).toFixed(1)}`);
+}
+
+// 19. Screenshot: logical mode with a focused edge — rows highlighted, marks clean.
+await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.viewmode', 'logical'); localStorage.setItem('flatbase.tables.json', f); }, data);
+await page.reload();
+await page.waitForSelector('.node.logical', { timeout: 5000 });
+await page.evaluate(() => {
+  const e = collectEdges().find(e => e.via && !e.proposed) || collectEdges().find(e => e.via);
+  if (e) focusEdge(e);
+});
+await page.screenshot({ path: path.join(OUT, 'logical-focus-edge.png') });
+
+// 20. Conceptual edgeGeometry untouched: row-hi is a no-op, layout still deterministic.
+await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.viewmode', 'conceptual'); localStorage.setItem('flatbase.tables.json', f); }, data);
+await page.reload();
+await page.waitForSelector('.node', { timeout: 5000 });
+const concDet = await page.evaluate(() => {
+  computePositions(); const a = JSON.stringify(positions);
+  computePositions(); const b = JSON.stringify(positions);
+  const g = document.querySelector('#edge-layer .edge');
+  return { det: a === b, anyLogical: !!document.querySelector('.node.logical'), hasEdge: !!g };
+});
+ok('conceptual mode intact after P2 (deterministic, no logical nodes)',
+   concDet.det && !concDet.anyLogical && concDet.hasEdge, JSON.stringify(concDet));
+
 await browser.close();
 console.log(results.join('\n'));
