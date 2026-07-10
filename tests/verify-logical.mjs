@@ -405,5 +405,25 @@ const concDet = await page.evaluate(() => {
 ok('conceptual mode intact after P2 (deterministic, no logical nodes)',
    concDet.det && !concDet.anyLogical && concDet.hasEdge, JSON.stringify(concDet));
 
+// 21. Duplicate column names: the row anchor (logicalRowCY, first-match) and the
+//     row highlight (nodeRowEls byName, last-write-wins) must resolve to the SAME
+//     row — logicalRows dedupes by name (first occurrence wins), so rowsLen drops
+//     the second 'tag' and both accessors agree.
+const dupData = JSON.stringify({
+  meta: { project: 'dup' },
+  tables: [{ id: 'd', name: 'D', domain: 'x', type: 'entity',
+    columns: [{ name: 'id', pk: true }, { name: 'tag' }, { name: 'tag' }] }],
+});
+await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.viewmode', 'logical'); localStorage.setItem('flatbase.tables.json', f); }, dupData);
+await page.reload();
+await page.waitForSelector('.node.logical', { timeout: 5000 });
+const dup = await page.evaluate(() => {
+  const t = DATA.tables.find(t => t.id === 'd');
+  return { anchorCY: logicalRowCY(t, 'tag'), hiCY: nodeRowEls['d'].byName['tag'].cy,
+           rowsLen: logicalRows(t).rows.length };
+});
+ok('duplicate column names: anchor row Y === highlighted row Y',
+   dup.anchorCY === dup.hiCY && dup.rowsLen === 2, JSON.stringify(dup));
+
 await browser.close();
 console.log(results.join('\n'));

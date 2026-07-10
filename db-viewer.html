@@ -615,7 +615,16 @@ function logicalRows(t) {
   const pk   = cols.filter(r => r.c.pk);
   const fk   = cols.filter(r => !r.c.pk && colFkTarget(r.c));
   const rest = cols.filter(r => !r.c.pk && !colFkTarget(r.c));
-  const ordered = pk.concat(fk, rest);
+  // Dedupe by column name (first occurrence wins) so the row anchor
+  // (logicalRowCY's findIndex) and the row highlight (renderLogicalBody's byName,
+  // last-write-wins) resolve to the SAME row for a table with duplicate column names.
+  const seen = new Set();
+  const ordered = pk.concat(fk, rest).filter(r => {
+    const nm = r.c.name;
+    if (nm == null) return true;
+    if (seen.has(nm)) return false;
+    seen.add(nm); return true;
+  });
   if (ordered.length <= LOG_ROWCAP) return { rows: ordered, overflow: 0, all: ordered };
   return { rows: ordered.slice(0, LOG_ROWCAP), overflow: ordered.length - LOG_ROWCAP, all: ordered };
 }
@@ -869,9 +878,13 @@ function computePositions() {
   }
 
   positions = pos;
-  resolveOverlaps(conn, 30, 26, 320);
-  packComponents(conn, adj);
-  parkIsolated(conn, iso);
+  // Precompute per-node dims once — nodeHeight re-derives logicalRows, which is far
+  // too costly inside the O(n²·420) overlap loop. Same values, just cached.
+  const dim = {};
+  for (const id of ids) dim[id] = { w: nodeWidth(TBY[id]), h: nodeHeight(TBY[id]) };
+  resolveOverlaps(conn, 30, 26, 320, dim);
+  packComponents(conn, adj, dim);
+  parkIsolated(conn, iso, dim);
   // The hub is pinned at origin during the FR pass, but the post-passes
   // (overlap resolution / component packing) can nudge it. Translate the whole
   // layout so the hub lands exactly at {0,0} — Fit handles screen placement, so
@@ -883,7 +896,7 @@ function computePositions() {
 }
 
 // Nudge apart any pair of boxes still overlapping after the force pass.
-function resolveOverlaps(nodes, mxg, myg, iters) {
+function resolveOverlaps(nodes, mxg, myg, iters, dim) {
   const mw = nodeWidth() + mxg;
   for (let t = 0; t < iters; t++) {
     let moved = false;
@@ -892,7 +905,7 @@ function resolveOverlaps(nodes, mxg, myg, iters) {
         const A = positions[nodes[i]], B = positions[nodes[j]];
         // Per-pair required vertical gap: logical nodes vary a lot in height.
         // Conceptual → (72+72)/2 = 72 → byte-identical to the old NODE_H + myg.
-        const mh = (nodeHeight(TBY[nodes[i]]) + nodeHeight(TBY[nodes[j]])) / 2 + myg;
+        const mh = (dim[nodes[i]].h + dim[nodes[j]].h) / 2 + myg;
         const dx = A.x - B.x, dy = A.y - B.y;
         const ox = mw - Math.abs(dx), oy = mh - Math.abs(dy);
         if (ox > 0 && oy > 0) {
@@ -909,7 +922,7 @@ function resolveOverlaps(nodes, mxg, myg, iters) {
 // Shelf-tile disconnected components so they don't blow up the extent.
 // No-op for a single connected component (the common case) — the force
 // result (centered at origin) is then left untouched.
-function packComponents(conn, adj) {
+function packComponents(conn, adj, dim) {
   if (conn.length < 2) return;
   const seen = new Set(), comps = [];
   conn.forEach(s => {
@@ -922,7 +935,7 @@ function packComponents(conn, adj) {
   const GAP = 80, W = nodeWidth();
   const boxes = comps.map(c => {
     let xn = 1e9, xx = -1e9, yn = 1e9, yx = -1e9;
-    c.forEach(id => { const p = positions[id], H = nodeHeight(TBY[id]); xn = Math.min(xn, p.x); xx = Math.max(xx, p.x + W); yn = Math.min(yn, p.y); yx = Math.max(yx, p.y + H); });
+    c.forEach(id => { const p = positions[id], H = dim[id].h; xn = Math.min(xn, p.x); xx = Math.max(xx, p.x + W); yn = Math.min(yn, p.y); yx = Math.max(yx, p.y + H); });
     return { c, xn, yn, w: xx - xn, h: yx - yn, area: (xx - xn) * (yx - yn) };
   });
   boxes.sort((a, b) => b.area - a.area);
@@ -938,7 +951,7 @@ function packComponents(conn, adj) {
 
 // Drop isolated (no-relation) nodes into empty pockets inside the connected
 // cluster's bounding box, falling back to a grid below it.
-function parkIsolated(conn, iso) {
+function parkIsolated(conn, iso, dim) {
   if (!iso.length) return;
   const W = nodeWidth(), GX = 30, GY = 26, STEP = 24;
   // Fallback grid row pitch: conceptual keeps the historical NODE_H + 30; logical
@@ -950,12 +963,12 @@ function parkIsolated(conn, iso) {
     return;
   }
   let bxn = 1e9, bxx = -1e9, byn = 1e9, byx = -1e9;
-  conn.forEach(id => { const p = positions[id], H = nodeHeight(TBY[id]); bxn = Math.min(bxn, p.x); bxx = Math.max(bxx, p.x + W); byn = Math.min(byn, p.y); byx = Math.max(byx, p.y + H); });
+  conn.forEach(id => { const p = positions[id], H = dim[id].h; bxn = Math.min(bxn, p.x); bxx = Math.max(bxx, p.x + W); byn = Math.min(byn, p.y); byx = Math.max(byx, p.y + H); });
   const placed = conn.slice();
-  const freeAt = (x, y, h) => placed.every(id => { const p = positions[id], ph = nodeHeight(TBY[id]); return !(x < p.x + W + GX && p.x < x + W + GX && y < p.y + ph + GY && p.y < y + h + GY); });
+  const freeAt = (x, y, h) => placed.every(id => { const p = positions[id], ph = dim[id].h; return !(x < p.x + W + GX && p.x < x + W + GX && y < p.y + ph + GY && p.y < y + h + GY); });
   let fb = 0;
   iso.forEach(id => {
-    const H = nodeHeight(TBY[id]);
+    const H = dim[id].h;
     let best = null;
     for (let y = byn; y <= byx - H && !best; y += STEP) {
       for (let x = bxn; x <= bxx - W; x += STEP) { if (freeAt(x, y, H)) { best = { x, y }; break; } }
@@ -1524,9 +1537,16 @@ function edgeGeometry(edge) {
     // Self-relation: draw a small loop bulging out to the right of the node.
     const selfT = TBY[edge.from];
     const right = fromPos.x + nodeWidth(selfT);
-    const selfH = nodeHeight(selfT);
-    const yTop = fromPos.y + selfH * 0.3;
-    const yBot = fromPos.y + selfH * 0.7;
+    let yTop, yBot;
+    if (viewMode === 'logical') {
+      // Anchor the loop to the header band so a tall (12-row) node doesn't sprawl.
+      yTop = fromPos.y + LOG_HEADER * 0.5;
+      yBot = fromPos.y + LOG_HEADER * 1.5;
+    } else {
+      const selfH = nodeHeight(selfT);   // conceptual — byte-identical to before
+      yTop = fromPos.y + selfH * 0.3;
+      yBot = fromPos.y + selfH * 0.7;
+    }
     x1 = right; y1 = yTop;
     x2 = right; y2 = yBot;
     const LOOP_OUT = 70;
