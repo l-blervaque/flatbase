@@ -66,6 +66,6 @@
 
 ## Why now
 
-The [client] lattice is about to run the accepted-schema round-trip (propose → prune →
+A production lattice project is about to run the accepted-schema round-trip (propose → prune →
 apply → gen-schema): its output will contain defined enums and confirmed/inferred
 columns, and today's viewer would silently hide the enums the operator just accepted.
