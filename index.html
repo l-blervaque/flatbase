@@ -1,0 +1,2152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>flatbase demo — flatbase</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      background: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 16px;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .app-title { font-weight: 700; font-size: 14px; white-space: nowrap; }
+    .app-title small { font-weight: 400; opacity: 0.6; font-size: 11px; }
+
+    #domain-filters { display: flex; gap: 10px; flex-wrap: wrap; flex: 1; }
+
+    .domain-chip {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+      user-select: none;
+      opacity: 1;
+      transition: opacity 0.15s;
+    }
+    .domain-chip.off { opacity: 0.35; }
+    .domain-chip input { accent-color: #fff; cursor: pointer; }
+
+    #reset-btn, #export-btn, #reload-data-btn {
+      background: #313244;
+      color: #cdd6f4;
+      border: 1px solid #45475a;
+      padding: 4px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover { background: #45475a; }
+
+    #main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    #sidebar {
+      width: 260px;
+      flex-shrink: 0;
+      overflow-y: auto;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      padding: 8px 0;
+    }
+
+    .sidebar-domain { padding: 6px 12px 2px; }
+    .sidebar-domain-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      opacity: 0.5;
+    }
+
+    .sidebar-table {
+      padding: 5px 16px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      line-height: 1.3;
+      transition: background 0.1s;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .sidebar-table .row-body { flex: 1; min-width: 0; }
+    .sidebar-table:hover { background: #f0f0f0; }
+    .sidebar-table.highlighted { background: #fef3c7; border-left-color: #f59e0b; }
+    .sidebar-table.hidden-node { opacity: 0.35; }
+    .sidebar-table.hidden-node .row-body { text-decoration: line-through; }
+
+    .eye-toggle {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      margin-top: 2px;
+      border-radius: 3px;
+      border: 1px solid #cbd5e0;
+      background: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      color: #4a5568;
+      user-select: none;
+      padding: 0;
+    }
+    .eye-toggle:hover { background: #edf2f7; }
+    .eye-toggle.hidden-state { background: #f7fafc; color: #cbd5e0; }
+    .eye-toggle.disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .table-name-en { font-weight: 600; font-size: 12px; }
+    .table-name-ja { font-size: 11px; color: #888; }
+    .table-badges { display: flex; gap: 4px; margin-top: 2px; flex-wrap: wrap; }
+    .badge {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 600;
+      background: #e5e7eb;
+      color: #374151;
+    }
+    .badge.not-modeled { background: #fde8e8; color: #c53030; }
+    .badge.proposed { background: #ede9fe; color: #5b21b6; }
+    .node.arb-ignored { opacity: 0.35; }
+    .sidebar-table.arb-ignored .table-name-en { text-decoration: line-through; opacity: 0.5; }
+
+    #diagram-wrap {
+      flex: 1;
+      overflow: auto;
+      background: #fafafa;
+    }
+
+    #diagram { display: block; }
+
+    /* SVG node styles */
+    .node rect {
+      stroke-width: 1.5;
+      rx: 6;
+      cursor: pointer;
+      transition: filter 0.15s;
+    }
+    .node rect:hover { filter: brightness(0.92); }
+    .node.hidden { display: none; }
+    .node.highlighted rect { stroke-width: 3; stroke: #f59e0b !important; }
+    .node text { pointer-events: none; }
+
+    .edge { opacity: 0.55; transition: opacity 0.15s; }
+    .edge > path:not(.hit-path), .edge text { pointer-events: none; }
+    .edge > path.hit-path { pointer-events: stroke; stroke: transparent; fill: none; cursor: default; }
+    .edge text { opacity: 0; transition: opacity 0.15s; pointer-events: none; }
+    .edge .cardinality { fill: #1e293b; }
+    .edge .cardinality-bg {
+      fill: #ffffff;
+      stroke: #cbd5e1;
+      stroke-width: 0.8;
+      opacity: 0;
+      transition: opacity 0.15s;
+      pointer-events: fill;
+    }
+    .edge.hidden { display: none; }
+
+    /* Labels (type label + cardinality badge) are revealed only by directly hovering the edge
+       or via a detail-pane pair/bundle highlight. Hovering a connected node does not reveal them. */
+    .edge:hover text,
+    .edge:hover .cardinality-bg,
+    .edge.is-pair text,
+    .edge.is-pair .cardinality-bg { opacity: 1; }
+
+    /* When something is being hovered, dim everything by default */
+    body.hovering .edge { opacity: 0.12; }
+    body.hovering .edge.is-touching { opacity: 1; }
+    body.hovering .node:not(.is-touching-hover) rect { opacity: 0.45; }
+
+    /* Hover originating from the detail pane: overlay an orange emphasis on the specific link(s),
+       while the selected table's normal neighborhood highlight stays intact. */
+    body.hovering-from-detail .node.is-pair rect {
+      stroke: #f97316 !important;
+      stroke-width: 3;
+      filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.6));
+    }
+    body.hovering-from-detail .edge.is-pair path,
+    body.hovering-from-detail .edge.is-pair line {
+      stroke: #f97316 !important;
+      stroke-width: 3;
+      filter: drop-shadow(0 0 4px rgba(249, 115, 22, 0.55));
+    }
+
+    #detail-panel {
+      width: 380px;
+      flex-shrink: 0;
+      background: #fff;
+      border-left: 1px solid #e0e0e0;
+      box-shadow: -2px 0 10px rgba(0,0,0,0.05);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #detail-panel.closed { display: none; }
+    #detail-panel header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      border-bottom: 1px solid #e2e8f0;
+      background: #f7fafc;
+    }
+    #detail-panel h2 {
+      font-size: 16px;
+      font-weight: 700;
+      color: #1a202c;
+      margin: 0;
+    }
+    #detail-close {
+      background: transparent;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: #718096;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    #detail-close:hover { color: #1a202c; }
+    #detail-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 18px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .detail-section { margin-bottom: 18px; }
+    .detail-section-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #718096;
+      margin-bottom: 6px;
+    }
+    .detail-meta-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .detail-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .detail-relation {
+      padding: 6px 8px;
+      margin-bottom: 4px;
+      background: #f7fafc;
+      border-left: 3px solid #cbd5e0;
+      border-radius: 0 4px 4px 0;
+      font-size: 12px;
+    }
+    .detail-relation .rel-type {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: #718096;
+      letter-spacing: 0.05em;
+    }
+    .detail-relation .rel-target {
+      font-weight: 600;
+      color: #2d3748;
+    }
+    .detail-relation .rel-self {
+      font-weight: 600;
+      color: #92400e;
+      background: #fef3c7;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-style: italic;
+    }
+    .detail-relation.navigable {
+      cursor: pointer;
+      transition: background 0.12s, border-left-color 0.12s;
+    }
+    .detail-relation.navigable .rel-target { color: #3182ce; }
+    .detail-relation.navigable:hover {
+      background: #fff7ed;
+      border-left-color: #f97316;
+    }
+    .detail-relation .rel-label { color: #718096; font-style: italic; font-size: 11px; }
+    .detail-relation.poly { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-left-color: #f59e0b; }
+    .detail-relation.poly .rel-poly-label { font-weight: 600; color: #2d3748; }
+    .detail-relation.poly .rel-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .rel-chip {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 10px;
+      background: #edf2f7;
+      color: #2d3748;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .rel-chip.navigable { cursor: pointer; color: #3182ce; transition: background 0.12s; }
+    .rel-chip.navigable:hover { background: #fff7ed; color: #c2410c; }
+    .rel-chip-wildcard { background: #fef3c7; color: #92400e; font-style: italic; }
+    .detail-relation.detail-relation-bundle { cursor: default; transition: background 0.12s, border-left-color 0.12s; }
+    .detail-relation.detail-relation-bundle:hover { background: #fff7ed; border-left-color: #f97316; }
+    .detail-notes {
+      padding: 8px 10px;
+      background: #fffaf0;
+      border-left: 3px solid #ed8936;
+      border-radius: 0 4px 4px 0;
+      color: #744210;
+    }
+    .detail-columns {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .detail-columns th, .detail-columns td {
+      text-align: left;
+      padding: 4px 8px;
+      border-bottom: 1px solid #edf2f7;
+      vertical-align: top;
+    }
+    .detail-columns th {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #718096;
+      font-weight: 700;
+    }
+    .detail-columns .col-name { font-weight: 600; color: #2d3748; }
+    .detail-columns .col-type { color: #718096; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+    .detail-columns .col-flags { font-size: 10px; }
+    .detail-columns .col-flag {
+      display: inline-block;
+      padding: 1px 5px;
+      border-radius: 3px;
+      margin-right: 3px;
+      font-weight: 600;
+      background: #edf2f7;
+      color: #4a5568;
+    }
+    .detail-columns .col-flag.pk { background: #fef3c7; color: #92400e; }
+    .detail-columns .col-flag.fk { background: #dbeafe; color: #1e40af; }
+    .detail-columns tr.navigable { cursor: pointer; transition: background 0.12s; }
+    .detail-columns tr.navigable:hover td { background: #fff7ed; }
+    .detail-columns .col-flag.nn { background: #fed7d7; color: #742a2a; }
+    .detail-columns .col-flag.proposed { background: #ede9fe; color: #5b21b6; }
+    .detail-columns tr.arb-ignored td { opacity: 0.4; text-decoration: line-through; }
+    .arb-btn { font-size: 9px; padding: 1px 5px; margin-left: 3px; border: none;
+      border-radius: 3px; cursor: pointer; background: #e2e8f0; color: #4a5568; }
+    .arb-btn:hover { background: #cbd5e0; }
+    .arb-btn.on { background: #ede9fe; color: #5b21b6; font-weight: 600; }
+    #export-proposal-btn { background: #6d28d9; color: #fff; }
+    #export-proposal-btn:hover { background: #5b21b6; }
+    .detail-columns .col-notes { color: #718096; font-style: italic; font-size: 11px; }
+    .detail-columns .col-evidence, .detail-evidence { color: #6d28d9; font-style: italic; font-size: 11px; }
+    .detail-columns .col-flag.inferred { background: #f1f5f9; color: #94a3b8; font-style: italic; }
+    .detail-columns .col-flag.enum-gap { background: #fde8e8; color: #c53030; }
+    .detail-columns tr.col-inferred .col-name { font-style: italic; color: #718096; }
+    .detail-arb-note { color: #6d28d9; font-size: 11px; font-weight: 600; margin-top: 4px; }
+    #detail-hide-btn {
+      margin-top: 12px;
+      width: 100%;
+      padding: 8px 12px;
+      background: #fed7d7;
+      color: #742a2a;
+      border: 1px solid #fc8181;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 12px;
+    }
+    #detail-hide-btn:hover { background: #fbb6b6; }
+    #detail-hide-btn.is-hidden { background: #c6f6d5; color: #22543d; border-color: #68d391; }
+    #detail-hide-btn.is-hidden:hover { background: #9ae6b4; }
+  </style>
+</head>
+<body>
+<script>window.__BAKED_DATA__ = {"meta": {"version": "example-1.1", "scope": "Bookstore sample \u2014 demonstrates every relation type, node style, and column metadata supported by the viewer"}, "domains": [{"id": "commercial", "color": "#4E79A7"}, {"id": "sales", "color": "#F28E2B"}, {"id": "customer", "color": "#E15759"}, {"id": "cross-cutting", "color": "#76B7B2"}, {"id": "reference", "color": "#9C755F"}], "tables": [{"id": "publisher", "name": "Publisher", "name_ja": "\u51fa\u7248\u793e", "domain": "commercial", "type": "entity", "modeled": true, "relations": [{"type": "has_many", "target": "book"}, {"type": "many_to_many", "target": "author", "label": "contracted"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "name", "type": "string(255)", "nullable": false, "unique": true}, {"name": "country_code", "type": "string(2)", "notes": "ISO 3166-1 alpha-2"}, {"name": "website", "type": "string(255)"}, {"name": "created_at", "type": "timestamp", "nullable": false}]}, {"id": "author", "name": "Author", "name_ja": "\u8457\u8005", "domain": "commercial", "type": "entity", "modeled": true, "relations": [{"type": "many_to_many", "target": "book", "label": "wrote"}, {"type": "many_to_many", "target": "publisher"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "first_name", "type": "string(100)", "nullable": false}, {"name": "last_name", "type": "string(100)", "nullable": false}, {"name": "pen_name", "type": "string(100)", "notes": "Optional pseudonym used on covers."}, {"name": "born_on", "type": "date"}, {"name": "died_on", "type": "date"}, {"name": "bio", "type": "text"}]}, {"id": "book", "name": "Book", "name_ja": "\u66f8\u7c4d", "domain": "commercial", "type": "entity", "modeled": true, "relations": [{"type": "belongs_to", "target": "publisher"}, {"type": "many_to_many", "target": "author"}, {"type": "many_to_many", "target": "genre"}, {"type": "belongs_to", "target": "language"}, {"type": "extends", "target": "ebook"}, {"type": "extends", "target": "physical_book"}, {"type": "has_many", "target": "order_line"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "isbn", "type": "string(13)", "nullable": false, "unique": true}, {"name": "title", "type": "string(255)", "nullable": false}, {"name": "subtitle", "type": "string(255)"}, {"name": "publisher_id", "type": "uuid", "fk": "publisher", "nullable": false}, {"name": "language_id", "type": "uuid", "fk": "language", "nullable": false}, {"name": "published_at", "type": "date", "notes": "Publication date as printed on the book."}, {"name": "price_cents", "type": "integer", "nullable": false}, {"name": "created_at", "type": "timestamp", "nullable": false}, {"name": "updated_at", "type": "timestamp", "nullable": false}]}, {"id": "ebook", "name": "E-Book", "name_ja": "\u96fb\u5b50\u66f8\u7c4d", "domain": "commercial", "type": "extension", "modeled": true, "relations": [{"type": "belongs_to", "target": "book"}], "columns": [{"name": "book_id", "type": "uuid", "pk": true, "fk": "book"}, {"name": "format", "type": "enum(epub,pdf,mobi)", "nullable": false}, {"name": "file_url", "type": "string(500)", "nullable": false}, {"name": "file_size_bytes", "type": "bigint", "nullable": false}, {"name": "drm_protected", "type": "boolean", "nullable": false}]}, {"id": "physical_book", "name": "Physical Book", "name_ja": "\u7d19\u306e\u672c", "domain": "commercial", "type": "extension", "modeled": true, "notes": "Has weight, dimensions, stock count \u2014 not yet modeled in inventory.", "relations": [{"type": "belongs_to", "target": "book"}], "columns": [{"name": "book_id", "type": "uuid", "pk": true, "fk": "book"}, {"name": "weight_g", "type": "integer"}, {"name": "width_mm", "type": "integer"}, {"name": "height_mm", "type": "integer"}, {"name": "depth_mm", "type": "integer"}, {"name": "page_count", "type": "integer"}, {"name": "stock_qty", "type": "integer", "nullable": false, "notes": "Defaults to 0; decremented on order fulfillment."}]}, {"id": "customer", "name": "Customer", "name_ja": "\u9867\u5ba2", "domain": "customer", "type": "entity", "modeled": true, "relations": [{"type": "has_many", "target": "address"}, {"type": "has_many", "target": "order"}, {"type": "has_one", "target": "cart", "label": "active cart"}, {"type": "has_many", "target": "review"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "email", "type": "string(255)", "nullable": false, "unique": true}, {"name": "password_hash", "type": "string(60)", "nullable": false, "notes": "bcrypt"}, {"name": "first_name", "type": "string(100)"}, {"name": "last_name", "type": "string(100)"}, {"name": "phone", "type": "string(20)"}, {"name": "email_verified_at", "type": "timestamp"}, {"name": "created_at", "type": "timestamp", "nullable": false}]}, {"id": "address", "name": "Address", "name_ja": "\u4f4f\u6240", "domain": "customer", "type": "extension", "modeled": true, "relations": [{"type": "belongs_to", "target": "customer"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "customer_id", "type": "uuid", "fk": "customer", "nullable": false}, {"name": "label", "type": "string(50)", "notes": "e.g. \"Home\", \"Office\""}, {"name": "street", "type": "string(255)", "nullable": false}, {"name": "city", "type": "string(100)", "nullable": false}, {"name": "postal_code", "type": "string(20)", "nullable": false}, {"name": "country_code", "type": "string(2)", "nullable": false}, {"name": "is_default", "type": "boolean", "nullable": false}]}, {"id": "cart", "name": "Cart", "name_ja": "\u30ab\u30fc\u30c8", "domain": "customer", "type": "entity", "modeled": false, "notes": "Phase 2.", "relations": [{"type": "belongs_to", "target": "customer"}, {"type": "has_many", "target": "order_line"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "customer_id", "type": "uuid", "fk": "customer", "nullable": false, "unique": true}, {"name": "updated_at", "type": "timestamp", "nullable": false}]}, {"id": "order", "name": "Order", "name_ja": "\u6ce8\u6587", "domain": "sales", "type": "entity", "modeled": true, "relations": [{"type": "belongs_to", "target": "customer"}, {"type": "belongs_to", "target": "address", "label": "shipping"}, {"type": "has_many", "target": "order_line"}, {"type": "has_one", "target": "payment"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "number", "type": "string(20)", "nullable": false, "unique": true, "notes": "Human-readable, e.g. \"ORD-2026-00042\""}, {"name": "customer_id", "type": "uuid", "fk": "customer", "nullable": false}, {"name": "shipping_address_id", "type": "uuid", "fk": "address", "nullable": false}, {"name": "status", "type": "enum(pending,paid,shipped,delivered,cancelled)", "nullable": false}, {"name": "subtotal_cents", "type": "integer", "nullable": false}, {"name": "tax_cents", "type": "integer", "nullable": false}, {"name": "shipping_cents", "type": "integer", "nullable": false}, {"name": "total_cents", "type": "integer", "nullable": false}, {"name": "placed_at", "type": "timestamp", "nullable": false}]}, {"id": "order_line", "name": "Order Line", "name_ja": "\u6ce8\u6587\u660e\u7d30", "domain": "sales", "type": "entity", "modeled": true, "relations": [{"type": "belongs_to", "target": "order"}, {"type": "belongs_to", "target": "book"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "order_id", "type": "uuid", "fk": "order", "nullable": false}, {"name": "book_id", "type": "uuid", "fk": "book", "nullable": false}, {"name": "quantity", "type": "integer", "nullable": false}, {"name": "unit_price_cents", "type": "integer", "nullable": false, "notes": "Snapshot of book price at order time."}]}, {"id": "payment", "name": "Payment", "name_ja": "\u652f\u6255", "domain": "sales", "type": "entity", "modeled": true, "relations": [{"type": "belongs_to", "target": "order"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "order_id", "type": "uuid", "fk": "order", "nullable": false, "unique": true}, {"name": "provider", "type": "enum(stripe,paypal,bank_transfer)", "nullable": false}, {"name": "provider_ref", "type": "string(100)", "nullable": false}, {"name": "amount_cents", "type": "integer", "nullable": false}, {"name": "captured_at", "type": "timestamp"}, {"name": "refunded_at", "type": "timestamp"}]}, {"id": "review", "name": "Review", "name_ja": "\u30ec\u30d3\u30e5\u30fc", "domain": "sales", "type": "entity", "modeled": true, "notes": "Polymorphic \u2014 a review targets either a book or an author.", "relations": [{"type": "belongs_to", "target": "customer"}, {"type": "polymorphic", "targets": ["book", "author"]}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "customer_id", "type": "uuid", "fk": "customer", "nullable": false}, {"name": "reviewable_type", "type": "enum(book,author)", "nullable": false, "notes": "Polymorphic discriminator"}, {"name": "reviewable_id", "type": "uuid", "nullable": false}, {"name": "rating", "type": "integer", "nullable": false, "notes": "1\u20135"}, {"name": "title", "type": "string(255)"}, {"name": "body", "type": "text"}, {"name": "created_at", "type": "timestamp", "nullable": false}]}, {"id": "tag", "name": "Tag", "name_ja": "\u30bf\u30b0", "domain": "cross-cutting", "type": "cross-cutting", "modeled": true, "relations": [{"type": "has_many", "target": "tagging"}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "slug", "type": "string(50)", "nullable": false, "unique": true}, {"name": "label", "type": "string(100)", "nullable": false}]}, {"id": "tagging", "name": "Tagging", "name_ja": "\u30bf\u30b0\u4ed8\u3051", "domain": "cross-cutting", "type": "cross-cutting", "modeled": true, "notes": "Polymorphic join \u2014 any taggable record.", "relations": [{"type": "belongs_to", "target": "tag"}, {"type": "polymorphic", "targets": ["book", "author", "order"]}], "columns": [{"name": "id", "type": "uuid", "pk": true}, {"name": "tag_id", "type": "uuid", "fk": "tag", "nullable": false}, {"name": "taggable_type", "type": "enum(book,author,order)", "nullable": false}, {"name": "taggable_id", "type": "uuid", "nullable": false}, {"name": "created_at", "type": "timestamp", "nullable": false}]}, {"id": "audit_log", "name": "Audit Log", "name_ja": "\u76e3\u67fb\u30ed\u30b0", "domain": "cross-cutting", "type": "cross-cutting", "modeled": false, "notes": "Read-only. Captures every mutation across the system.", "relations": [{"type": "polymorphic", "targets": ["*"]}], "columns": [{"name": "id", "type": "bigserial", "pk": true}, {"name": "actor_id", "type": "uuid", "notes": "Customer or staff member who triggered the change. Null for system events."}, {"name": "target_type", "type": "string(50)", "nullable": false}, {"name": "target_id", "type": "uuid", "nullable": false}, {"name": "action", "type": "enum(create,update,delete)", "nullable": false}, {"name": "changes", "type": "jsonb", "notes": "Diff of changed fields."}, {"name": "occurred_at", "type": "timestamp", "nullable": false}]}, {"id": "genre", "name": "Genre", "name_ja": "\u30b8\u30e3\u30f3\u30eb", "domain": "reference", "type": "reference", "modeled": true, "relations": [{"type": "many_to_many", "target": "book"}], "columns": [{"name": "id", "type": "smallint", "pk": true}, {"name": "slug", "type": "string(50)", "nullable": false, "unique": true}, {"name": "label_en", "type": "string(100)", "nullable": false}, {"name": "label_ja", "type": "string(100)"}]}, {"id": "language", "name": "Language", "name_ja": "\u8a00\u8a9e", "domain": "reference", "type": "reference", "modeled": true, "relations": [{"type": "has_many", "target": "book"}], "columns": [{"name": "code", "type": "string(2)", "pk": true, "notes": "ISO 639-1"}, {"name": "label_en", "type": "string(100)", "nullable": false}, {"name": "label_native", "type": "string(100)", "nullable": false}]}]};</script>
+
+<header id="header">
+  <span class="app-title">flatbase <small>v0.5</small></span>
+  <div id="domain-filters"></div>
+  <select id="proposed-filter" title="Filter by proposed/defined">
+    <option value="all">Show: All</option>
+    <option value="proposed">Proposed only</option>
+    <option value="defined">Defined only</option>
+  </select>
+  <button id="reset-btn">Reset</button>
+  <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
+  <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+</header>
+
+<div id="main">
+  <nav id="sidebar"></nav>
+  <div id="diagram-wrap">
+    <svg id="diagram">
+      <defs id="svg-defs"></defs>
+    </svg>
+  </div>
+  <aside id="detail-panel" class="closed">
+    <header>
+      <h2 id="detail-name-en"></h2>
+      <button id="detail-close" aria-label="Close">×</button>
+    </header>
+    <div id="detail-body"></div>
+  </aside>
+</div>
+
+<script>
+let DATA = null;
+let DOMAIN_ORDER = [];
+let DOMAIN_COLORS = {};
+
+const NODE_W = 190;
+const NODE_H = 72;
+const PAD = 50;
+
+// Mutable state
+let hiddenNodes = new Set();
+let cascadeHiddenNodes = new Set();
+let hiddenDomains = new Set();
+let proposedFilter = 'all';
+let highlightedNode = null;
+
+function matchesProposedFilter(t) {
+  if (proposedFilter === 'proposed') return !!t.proposed;
+  if (proposedFilter === 'defined')  return !t.proposed;
+  return true;
+}
+
+// --- Proposal arbitration (Sub-spec 2) ---
+// A proposal.json is a flatbase schema carrying `proposed:true` elements. The operator
+// arbitrates per proposed element. Decisions persist in localStorage keyed by project.
+// Export writes the arbitrated proposal.json (kept + overruled, ignored removed) for
+// tools/apply-proposal.py. Arbitration keys:
+//   `${tableId}::${colName}` -> { ignore?:true, type?:string }   (per proposed column)
+//   `table::${tableId}`      -> { ignore?:true }                 (whole proposed table)
+//   `enum::${enumId}`        -> { ignore?:true }                 (proposed enum)
+// A table literally named "table" or "enum" would collide with the namespaced kinds;
+// theoretical, accepted.
+let RAW_INPUT = null;            // pristine loaded schema (pre-normalize), source for export
+let arbitration = {};
+function arbKey() { return 'flatbase.arbitration.' + ((DATA.meta && DATA.meta.project) || 'default'); }
+function colArb(tid, name) { return arbitration[tid + '::' + name] || {}; }
+function tableArb(tid)     { return arbitration['table::' + tid] || {}; }
+function enumArb(eid)      { return arbitration['enum::' + eid] || {}; }
+function setArb(key, mutator) {
+  const entry = arbitration[key] || {};
+  mutator(entry);
+  if (Object.keys(entry).length) arbitration[key] = entry;
+  else delete arbitration[key];
+  saveArbitration();
+}
+function loadArbitration() {
+  try { arbitration = JSON.parse(localStorage.getItem(arbKey())) || {}; }
+  catch { arbitration = {}; }
+}
+function saveArbitration() {
+  try { localStorage.setItem(arbKey(), JSON.stringify(arbitration)); } catch {}
+}
+function exportProposal() {
+  if (!RAW_INPUT) return;
+  const out = JSON.parse(JSON.stringify(RAW_INPUT));
+  let keptTables = 0, ignoredTables = 0;
+  let kept = 0, ignored = 0, overruled = 0, droppedFks = 0;
+  let keptEnums = 0, ignoredEnums = 0;
+
+  // 1. Whole-table arbitration — only PROPOSED tables are droppable.
+  const droppedIds = new Set();
+  out.tables = (out.tables || []).filter(t => {
+    if (!t.proposed) return true;
+    if (tableArb(t.id).ignore) { ignoredTables++; droppedIds.add(t.id); return false; }
+    keptTables++;
+    return true;
+  });
+
+  // 2. Column arbitration + dangling-FK hygiene.
+  for (const t of out.tables) {
+    if (!Array.isArray(t.columns)) continue;
+    t.columns = t.columns.map(col => {
+      const c = typeof col === 'string' ? { name: col } : col;
+      // Only PROPOSED columns are arbitrable; a stale key must never touch a baseline column.
+      const arb = c.proposed ? colArb(t.id, c.name) : null;
+      if (arb && arb.type != null && !arb.ignore) {
+        overruled++;
+        if (typeof col === 'string') return { name: col, type: arb.type };
+        col.type = arb.type;
+      }
+      return col;
+    }).filter(col => {
+      const c = typeof col === 'string' ? { name: col } : col;
+      if (!c.proposed) return true;
+      if (colArb(t.id, c.name).ignore) { ignored++; return false; }
+      // A proposed FK whose target table was dropped would break apply-proposal.
+      const fkTarget = c.fk && (typeof c.fk === 'string' ? c.fk : c.fk.table);
+      if (fkTarget && droppedIds.has(fkTarget)) { droppedFks++; return false; }
+      kept++;
+      return true;
+    });
+  }
+
+  // 3. Enum arbitration — only PROPOSED enums are droppable.
+  if (Array.isArray(out.enums)) {
+    out.enums = out.enums.filter(e => {
+      if (!e.proposed) return true;
+      if (enumArb(e.id).ignore) { ignoredEnums++; return false; }
+      keptEnums++;
+      return true;
+    });
+  }
+
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'proposal.arbitrated.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+  alert('Arbitrated proposal exported.\n' +
+        'Tables: ' + keptTables + ' proposed kept, ' + ignoredTables + ' ignored.\n' +
+        'Columns: ' + kept + ' proposed kept (' + overruled + ' overruled), ' + ignored + ' ignored' +
+        (droppedFks ? ', ' + droppedFks + ' dropped (FK target ignored)' : '') + '.\n' +
+        'Enums: ' + keptEnums + ' proposed kept, ' + ignoredEnums + ' ignored.\n' +
+        'Feed it to tools/apply-proposal.py.');
+}
+let positions = {}; // { [id]: { x, y } }
+
+function computePositions() {
+  const N = DATA.tables.length;
+  const idx = {};
+  DATA.tables.forEach((t, i) => { idx[t.id] = i; });
+
+  // Initial positions: ring around origin (deterministic)
+  const initialRadius = 30 * Math.sqrt(N);
+  const nodes = DATA.tables.map((t, i) => {
+    const angle = (i / N) * 2 * Math.PI;
+    return {
+      id: t.id,
+      x: Math.cos(angle) * initialRadius,
+      y: Math.sin(angle) * initialRadius,
+      vx: 0, vy: 0,
+    };
+  });
+
+  // Build unique edge pairs (skip belongs_to as before)
+  const edgePairs = new Set();
+  const edges = [];
+  for (const t of DATA.tables) {
+    for (const rel of (t.relations || [])) {
+      if (rel.type === 'belongs_to') continue;
+      const targets = rel.targets
+        ? rel.targets.filter(x => x !== '*')
+        : (rel.target ? [rel.target] : []);
+      for (const tgt of targets) {
+        if (idx[tgt] === undefined) continue;
+        const key = [t.id, tgt].sort().join('|');
+        if (edgePairs.has(key)) continue;
+        edgePairs.add(key);
+        edges.push([idx[t.id], idx[tgt]]);
+      }
+    }
+  }
+
+  // Simulation parameters — tuned for ~45 nodes, ~80 edges
+  const ITERATIONS = 800;
+  const REPULSION = 40000;        // pairwise repulsion strength
+  const SPRING_K = 0.06;          // edge spring stiffness
+  const SPRING_LENGTH = 240;      // ideal edge length
+  const CENTER_FORCE = 0.005;     // pull toward origin
+  const DAMPING = 0.82;
+  const MAX_VELOCITY = 30;
+
+  for (let iter = 0; iter < ITERATIONS; iter++) {
+    const fx = new Float64Array(N);
+    const fy = new Float64Array(N);
+
+    // Pairwise repulsion (O(n^2) — fine for ~45 nodes)
+    for (let i = 0; i < N; i++) {
+      for (let j = i + 1; j < N; j++) {
+        let dx = nodes[i].x - nodes[j].x;
+        let dy = nodes[i].y - nodes[j].y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { d2 = 1; dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); }
+        const d = Math.sqrt(d2);
+        const force = REPULSION / d2;
+        const ux = dx / d, uy = dy / d;
+        fx[i] += ux * force; fy[i] += uy * force;
+        fx[j] -= ux * force; fy[j] -= uy * force;
+      }
+    }
+
+    // Edge springs
+    for (const [a, b] of edges) {
+      const dx = nodes[b].x - nodes[a].x;
+      const dy = nodes[b].y - nodes[a].y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 1;
+      const force = SPRING_K * (d - SPRING_LENGTH);
+      const ux = dx / d, uy = dy / d;
+      fx[a] += ux * force; fy[a] += uy * force;
+      fx[b] -= ux * force; fy[b] -= uy * force;
+    }
+
+    // Center gravity
+    for (let i = 0; i < N; i++) {
+      fx[i] += -nodes[i].x * CENTER_FORCE;
+      fy[i] += -nodes[i].y * CENTER_FORCE;
+    }
+
+    // Cooling factor — anneal velocity over iterations
+    const cool = 1 - iter / ITERATIONS;
+
+    // Integrate
+    for (let i = 0; i < N; i++) {
+      nodes[i].vx = (nodes[i].vx + fx[i]) * DAMPING * cool;
+      nodes[i].vy = (nodes[i].vy + fy[i]) * DAMPING * cool;
+      // Clamp velocity
+      const vmag = Math.hypot(nodes[i].vx, nodes[i].vy);
+      if (vmag > MAX_VELOCITY) {
+        nodes[i].vx = (nodes[i].vx / vmag) * MAX_VELOCITY;
+        nodes[i].vy = (nodes[i].vy / vmag) * MAX_VELOCITY;
+      }
+      nodes[i].x += nodes[i].vx;
+      nodes[i].y += nodes[i].vy;
+    }
+  }
+
+  // Final overlap resolution: push apart any nodes that still overlap
+  const ITER_FIX = 50;
+  const SEP_X = NODE_W + 20;
+  const SEP_Y = NODE_H + 20;
+  for (let pass = 0; pass < ITER_FIX; pass++) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const ax = nodes[i].x, ay = nodes[i].y;
+        const bx = nodes[j].x, by = nodes[j].y;
+        const dx = bx - ax, dy = by - ay;
+        const overlapX = SEP_X - Math.abs(dx);
+        const overlapY = SEP_Y - Math.abs(dy);
+        if (overlapX > 0 && overlapY > 0) {
+          // Push along smaller-overlap axis
+          if (overlapX < overlapY) {
+            const push = overlapX / 2 + 1;
+            if (dx >= 0) { nodes[i].x -= push; nodes[j].x += push; }
+            else         { nodes[i].x += push; nodes[j].x -= push; }
+          } else {
+            const push = overlapY / 2 + 1;
+            if (dy >= 0) { nodes[i].y -= push; nodes[j].y += push; }
+            else         { nodes[i].y += push; nodes[j].y -= push; }
+          }
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+
+  // Translate so the bounding box starts at (PAD, PAD)
+  let minX = Infinity, minY = Infinity;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x);
+    minY = Math.min(minY, n.y);
+  }
+  positions = {};
+  for (const n of nodes) {
+    positions[n.id] = {
+      x: n.x - minX + PAD,
+      y: n.y - minY + PAD,
+    };
+  }
+}
+
+function computeAnchors(fromPos, toPos) {
+  const fcx = fromPos.x + NODE_W / 2;
+  const fcy = fromPos.y + NODE_H / 2;
+  const tcx = toPos.x   + NODE_W / 2;
+  const tcy = toPos.y   + NODE_H / 2;
+  const dx = tcx - fcx;
+  const dy = tcy - fcy;
+
+  let fromAnchor, toAnchor;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    if (dx >= 0) {
+      fromAnchor = { x: fromPos.x + NODE_W, y: fcy, side: 'right' };
+      toAnchor   = { x: toPos.x,            y: tcy, side: 'left'  };
+    } else {
+      fromAnchor = { x: fromPos.x,          y: fcy, side: 'left'  };
+      toAnchor   = { x: toPos.x + NODE_W,   y: tcy, side: 'right' };
+    }
+  } else {
+    if (dy >= 0) {
+      fromAnchor = { x: fcx, y: fromPos.y + NODE_H, side: 'bottom' };
+      toAnchor   = { x: tcx, y: toPos.y,            side: 'top'    };
+    } else {
+      fromAnchor = { x: fcx, y: fromPos.y,          side: 'top'    };
+      toAnchor   = { x: tcx, y: toPos.y + NODE_H,   side: 'bottom' };
+    }
+  }
+  return { from: fromAnchor, to: toAnchor };
+}
+
+function setSVGSize() {
+  const svg = document.getElementById('diagram');
+  let maxX = 0, maxY = 0;
+  for (const { x, y } of Object.values(positions)) {
+    maxX = Math.max(maxX, x + NODE_W + PAD);
+    maxY = Math.max(maxY, y + NODE_H + PAD);
+  }
+  svg.setAttribute('width', maxX);
+  svg.setAttribute('height', maxY);
+}
+
+function renderNodes() {
+  const svg = document.getElementById('diagram');
+  svg.querySelectorAll('.node').forEach(el => el.remove());
+
+  for (const t of DATA.tables) {
+    const pos = positions[t.id];
+    if (!pos) continue;
+
+    const color = DOMAIN_COLORS[t.domain] || '#999';
+    const isHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id) || hiddenDomains.has(t.domain) || !matchesProposedFilter(t);
+    const isHighlighted = highlightedNode === t.id;
+
+    const isArbIgnored = !!(t.proposed && tableArb(t.id).ignore);
+
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.classList.add('node');
+    if (isHidden) g.classList.add('hidden');
+    if (isHighlighted) g.classList.add('highlighted');
+    if (isArbIgnored) g.classList.add('arb-ignored');
+    g.dataset.id = t.id;
+
+    if (t.notes) {
+      const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+      title.textContent = t.notes;
+      g.appendChild(title);
+    }
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', pos.x);
+    rect.setAttribute('y', pos.y);
+    rect.setAttribute('width', NODE_W);
+    rect.setAttribute('height', NODE_H);
+    rect.setAttribute('rx', 6);
+    rect.setAttribute('fill', color + '22');
+    rect.setAttribute('stroke', color);
+    rect.setAttribute('stroke-width', isHighlighted ? 3 : 1.5);
+    if (!t.modeled) rect.setAttribute('stroke-dasharray', '5,3');
+    if (t.proposed) {
+      rect.setAttribute('stroke', '#8b5cf6');          // violet, overrides domain color
+      rect.setAttribute('stroke-dasharray', '5,3');
+    }
+    g.appendChild(rect);
+
+    const textEN = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    textEN.setAttribute('x', pos.x + 10);
+    textEN.setAttribute('y', pos.y + 20);
+    textEN.setAttribute('font-size', '12');
+    textEN.setAttribute('font-weight', '700');
+    textEN.setAttribute('fill', '#1a1a2e');
+    textEN.textContent = t.name;
+    g.appendChild(textEN);
+
+    const textJA = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    textJA.setAttribute('x', pos.x + 10);
+    textJA.setAttribute('y', pos.y + 36);
+    textJA.setAttribute('font-size', '10');
+    textJA.setAttribute('fill', '#666');
+    textJA.textContent = t.name_ja;
+    g.appendChild(textJA);
+
+    const badgeRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    badgeRect.setAttribute('x', pos.x + 10);
+    badgeRect.setAttribute('y', pos.y + 46);
+    badgeRect.setAttribute('width', 70);
+    badgeRect.setAttribute('height', 16);
+    badgeRect.setAttribute('rx', 3);
+    badgeRect.setAttribute('fill', color + '44');
+    g.appendChild(badgeRect);
+
+    const badgeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    badgeText.setAttribute('x', pos.x + 45);
+    badgeText.setAttribute('y', pos.y + 58);
+    badgeText.setAttribute('font-size', '9');
+    badgeText.setAttribute('font-weight', '600');
+    badgeText.setAttribute('text-anchor', 'middle');
+    badgeText.setAttribute('fill', color);
+    badgeText.textContent = t.type;
+    g.appendChild(badgeText);
+
+    if (!t.modeled) {
+      const nm = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      nm.setAttribute('x', pos.x + NODE_W - 8);
+      nm.setAttribute('y', pos.y + 58);
+      nm.setAttribute('font-size', '9');
+      nm.setAttribute('text-anchor', 'end');
+      nm.setAttribute('fill', '#c53030');
+      nm.textContent = 'planned';
+      g.appendChild(nm);
+    }
+    if (t.proposed) {
+      const pl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      // Right of the type badge (x+10..x+80), left of the end-anchored "planned" label.
+      pl.setAttribute('x', pos.x + 86);
+      pl.setAttribute('y', pos.y + 58);
+      pl.setAttribute('font-size', '9');
+      pl.setAttribute('fill', '#5b21b6');
+      pl.textContent = isArbIgnored ? 'ignored' : 'proposed';
+      g.appendChild(pl);
+    }
+
+    g.addEventListener('click', () => openDetailPanel(t.id));
+    g.addEventListener('mouseenter', () => setHoveredNode(t.id));
+    g.addEventListener('mouseleave', () => setHoveredNode(null));
+
+    svg.appendChild(g);
+  }
+}
+
+function setupDefs() {
+  const defs = document.getElementById('svg-defs');
+  const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+  marker.setAttribute('id', 'arrow');
+  marker.setAttribute('viewBox', '0 0 10 10');
+  marker.setAttribute('refX', '9');
+  marker.setAttribute('refY', '5');
+  marker.setAttribute('markerWidth', '6');
+  marker.setAttribute('markerHeight', '6');
+  marker.setAttribute('orient', 'auto-start-reverse');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+  path.setAttribute('fill', '#999');
+  marker.appendChild(path);
+  defs.appendChild(marker);
+
+  const markerStart = marker.cloneNode(true);
+  markerStart.setAttribute('id', 'arrow-start');
+  markerStart.setAttribute('orient', 'auto-start-reverse');
+  defs.appendChild(markerStart);
+}
+
+function findFKCol(childTableId, parentTableId, labelHint) {
+  const child = DATA.tables.find(t => t.id === childTableId);
+  if (!child || !Array.isArray(child.columns)) return null;
+  const matches = [];
+  for (const col of child.columns) {
+    if (!col || typeof col !== 'object') continue;
+    const fkTarget = typeof col.fk === 'string' ? col.fk : (col.fk && col.fk.table);
+    if (fkTarget === parentTableId) matches.push(col);
+  }
+  if (matches.length === 0) return null;
+  if (labelHint) {
+    const hit = matches.find(c => c.name === labelHint);
+    if (hit) return hit;
+  }
+  return matches[0];
+}
+
+function cardinalityFor(edge) {
+  switch (edge.type) {
+    case 'has_many': {
+      const fk = findFKCol(edge.to, edge.from, edge.label);
+      const min = fk && fk.nullable === false ? 1 : 0;
+      return { from: '(0,n)', to: `(${min},1)` };
+    }
+    case 'has_one': {
+      const fk = findFKCol(edge.to, edge.from, edge.label);
+      const min = fk && fk.nullable === false ? 1 : 0;
+      return { from: '(0,1)', to: `(${min},1)` };
+    }
+    case 'extends':
+      return { from: '(0,1)', to: '(1,1)' };
+    case 'many_to_many':
+      return { from: '(0,n)', to: '(0,n)' };
+    case 'polymorphic': {
+      const owner = DATA.tables.find(t => t.id === edge.from);
+      let min = 1;
+      if (owner && Array.isArray(owner.columns)) {
+        const col = owner.columns.find(c => c && typeof c === 'object' && c.polymorphic && c.name === edge.label);
+        if (col && col.nullable === true) min = 0;
+      }
+      return { from: '(0,n)', to: `(${min},1)` };
+    }
+    default:
+      return null;
+  }
+}
+
+function cardinalityLabelOffset(side, dist) {
+  switch (side) {
+    case 'right':  return { dx: dist,      dy: -4, anchor: 'start' };
+    case 'left':   return { dx: -dist,     dy: -4, anchor: 'end'   };
+    case 'top':    return { dx: 0,         dy: -dist, anchor: 'middle' };
+    case 'bottom': return { dx: 0,         dy: dist + 10, anchor: 'middle' };
+  }
+  return { dx: 0, dy: 0, anchor: 'middle' };
+}
+
+function appendCardinalityBadge(parent, cx, cy, textAnchor, text) {
+  // White rounded background + readable text — placed so it stays legible when crammed
+  // between two close tables.
+  const FONT = 11;
+  const charW = 6.4;
+  const padX = 4;
+  const padY = 2;
+  const w = text.length * charW + padX * 2;
+  const h = FONT + padY * 2;
+  let x = cx;
+  if (textAnchor === 'middle') x = cx - w / 2;
+  else if (textAnchor === 'end') x = cx - w;
+  const y = cy - h + padY + 2;
+
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('class', 'cardinality-bg');
+  rect.setAttribute('x', x);
+  rect.setAttribute('y', y);
+  rect.setAttribute('width', w);
+  rect.setAttribute('height', h);
+  rect.setAttribute('rx', 3);
+  parent.appendChild(rect);
+
+  const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t.setAttribute('class', 'cardinality');
+  t.setAttribute('x', cx);
+  t.setAttribute('y', cy);
+  t.setAttribute('font-size', FONT);
+  t.setAttribute('font-weight', '600');
+  t.setAttribute('text-anchor', textAnchor);
+  t.textContent = text;
+  parent.appendChild(t);
+}
+
+function collectEdges() {
+  const seen = new Set();
+  const edges = [];
+  for (const table of DATA.tables) {
+    for (const rel of (table.relations || [])) {
+      // Skip belongs_to — it's the inverse of has_many/has_one/extends on the parent
+      if (rel.type === 'belongs_to') continue;
+      const targets = rel.targets
+        ? rel.targets.filter(t => t !== '*')
+        : rel.target ? [rel.target] : [];
+      for (const target of targets) {
+        const key = [table.id, target].sort().join('|') + '|' + rel.type;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          from: table.id,
+          to: target,
+          type: rel.type,
+          label: rel.label || rel.type,
+          proposed: !!rel.proposed,
+          via: rel.via,
+          viaTable: rel.viaTable,
+        });
+      }
+    }
+  }
+  return edges;
+}
+
+function renderEdges(visibleIds) {
+  const svg = document.getElementById('diagram');
+  svg.querySelectorAll('.edge').forEach(el => el.remove());
+
+  const visible = new Set(visibleIds);
+  const edges = collectEdges();
+
+  for (const edge of edges) {
+    if (!positions[edge.from] || !positions[edge.to]) continue;
+    const bothVisible = visible.has(edge.from) && visible.has(edge.to);
+    // An edge is dropped from view when its carrying FK column is arb-ignored, or when
+    // either endpoint is an arb-ignored proposed table.
+    const tableIgnored = id => { const t = DATA.tables.find(x => x.id === id); return !!(t && t.proposed && tableArb(id).ignore); };
+    const arbSuppressed =
+      (edge.via && edge.viaTable && colArb(edge.viaTable, edge.via).ignore) ||
+      tableIgnored(edge.from) || tableIgnored(edge.to);
+
+    const fromPos = positions[edge.from];
+    const toPos = positions[edge.to];
+    const isSelf = edge.from === edge.to;
+
+    let x1, y1, x2, y2, cx1, cy1, cx2, cy2;
+    let fromSide = null, toSide = null;
+    const CTL = 60;
+    if (isSelf) {
+      // Self-relation: draw a small loop bulging out to the right of the node.
+      const right = fromPos.x + NODE_W;
+      const yTop = fromPos.y + NODE_H * 0.3;
+      const yBot = fromPos.y + NODE_H * 0.7;
+      x1 = right; y1 = yTop;
+      x2 = right; y2 = yBot;
+      const LOOP_OUT = 70;
+      const LOOP_FLARE = 30;
+      cx1 = right + LOOP_OUT; cy1 = yTop - LOOP_FLARE;
+      cx2 = right + LOOP_OUT; cy2 = yBot + LOOP_FLARE;
+      fromSide = 'right'; toSide = 'right';
+    } else {
+      const { from: a, to: b } = computeAnchors(fromPos, toPos);
+      x1 = a.x; y1 = a.y;
+      x2 = b.x; y2 = b.y;
+      fromSide = a.side; toSide = b.side;
+
+      cx1 = x1; cy1 = y1; cx2 = x2; cy2 = y2;
+      if (a.side === 'right')  cx1 = x1 + CTL;
+      if (a.side === 'left')   cx1 = x1 - CTL;
+      if (a.side === 'top')    cy1 = y1 - CTL;
+      if (a.side === 'bottom') cy1 = y1 + CTL;
+      if (b.side === 'right')  cx2 = x2 + CTL;
+      if (b.side === 'left')   cx2 = x2 - CTL;
+      if (b.side === 'top')    cy2 = y2 - CTL;
+      if (b.side === 'bottom') cy2 = y2 + CTL;
+    }
+
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.classList.add('edge');
+    g.dataset.from = edge.from;
+    g.dataset.to = edge.to;
+    if (!bothVisible || arbSuppressed) g.classList.add('hidden');
+
+    const d = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+    const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    hit.setAttribute('d', d);
+    hit.setAttribute('class', 'hit-path');
+    hit.setAttribute('stroke-width', '14');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', '#bbb');
+    path.setAttribute('stroke-width', '1.5');
+
+    if (edge.type === 'extends') {
+      path.setAttribute('stroke-dasharray', '6,3');
+      path.setAttribute('marker-end', 'url(#arrow)');
+    } else if (edge.type === 'many_to_many') {
+      path.setAttribute('marker-end', 'url(#arrow)');
+      path.setAttribute('marker-start', 'url(#arrow-start)');
+    } else if (edge.type === 'polymorphic') {
+      path.setAttribute('stroke-dasharray', '2,3');
+      path.setAttribute('marker-end', 'url(#arrow)');
+    } else {
+      path.setAttribute('marker-end', 'url(#arrow)');
+    }
+
+    if (edge.proposed) {
+      // Proposed edges match the proposed-node treatment: violet + dashed.
+      path.setAttribute('stroke', '#8b5cf6');
+      path.setAttribute('stroke-dasharray', '5,3');
+    }
+
+    g.appendChild(path);
+    g.appendChild(hit); // last so the wide invisible stroke is on top for hit testing
+
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    if (isSelf) {
+      // Anchor near the bulge of the loop, slightly to the right of the node.
+      label.setAttribute('x', Math.max(cx1, cx2) + 4);
+      label.setAttribute('y', (y1 + y2) / 2 + 3);
+      label.setAttribute('text-anchor', 'start');
+    } else {
+      label.setAttribute('x', (x1 + x2) / 2);
+      label.setAttribute('y', (y1 + y2) / 2 - 4);
+      label.setAttribute('text-anchor', 'middle');
+    }
+    label.setAttribute('font-size', '9');
+    label.setAttribute('fill', edge.proposed ? '#8b5cf6' : '#999');
+    label.textContent = edge.label;
+    g.appendChild(label);
+
+    if (!isSelf) {
+      const card = cardinalityFor(edge);
+      if (card) {
+        const fo = cardinalityLabelOffset(fromSide, 20);
+        const to_ = cardinalityLabelOffset(toSide, 20);
+        appendCardinalityBadge(g, x1 + fo.dx, y1 + fo.dy, fo.anchor, card.from);
+        appendCardinalityBadge(g, x2 + to_.dx, y2 + to_.dy, to_.anchor, card.to);
+      }
+    }
+
+    const firstNode = svg.querySelector('.node');
+    svg.insertBefore(g, firstNode);
+  }
+}
+
+function getVisibleIds() {
+  return DATA.tables
+    .filter(t => !hiddenDomains.has(t.domain) && !hiddenNodes.has(t.id) && !cascadeHiddenNodes.has(t.id) && matchesProposedFilter(t))
+    .map(t => t.id);
+}
+
+function recomputeCascade() {
+  const visible = new Set(
+    DATA.tables
+      .filter(t => !hiddenDomains.has(t.domain) && !hiddenNodes.has(t.id))
+      .map(t => t.id)
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const t of DATA.tables) {
+      if (!visible.has(t.id)) continue;
+      const neighbors = getNeighbors(t.id);
+      if (neighbors.length > 0 && neighbors.every(n => !visible.has(n))) {
+        visible.delete(t.id);
+        cascadeHiddenNodes.add(t.id);
+        changed = true;
+      }
+    }
+  }
+}
+
+function cascadeHide(id) {
+  hiddenNodes.add(id);
+  cascadeHiddenNodes.clear();
+  recomputeCascade();
+}
+
+function toggleNodeVisibility(id) {
+  if (hiddenNodes.has(id)) {
+    hiddenNodes.delete(id);
+    cascadeHiddenNodes.clear();
+    recomputeCascade();
+    render();
+    return;
+  }
+  if (cascadeHiddenNodes.has(id)) {
+    cascadeHiddenNodes.delete(id);
+    render();
+    return;
+  }
+  hiddenNodes.add(id);
+  cascadeHiddenNodes.clear();
+  recomputeCascade();
+  render();
+}
+
+// Build the inverse relations map once at init
+let inverseRelations = {}; // { [targetId]: [{ from, type, label }, ...] }
+
+function buildInverseRelations() {
+  inverseRelations = {};
+  for (const table of DATA.tables) {
+    for (const rel of (table.relations || [])) {
+      const targets = rel.targets
+        ? rel.targets.filter(t => t !== '*')
+        : (rel.target ? [rel.target] : []);
+      for (const tgt of targets) {
+        if (!inverseRelations[tgt]) inverseRelations[tgt] = [];
+        inverseRelations[tgt].push({ from: table.id, type: rel.type, label: rel.label });
+      }
+    }
+  }
+}
+
+let openPanelId = null;
+
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function openDetailPanel(id) {
+  const table = DATA.tables.find(t => t.id === id);
+  if (!table) return;
+  openPanelId = id;
+  highlightedNode = id;
+
+  const panel = document.getElementById('detail-panel');
+  panel.classList.remove('closed');
+  document.getElementById('detail-name-en').textContent = table.name;
+
+  const color = DOMAIN_COLORS[table.domain] || '#999';
+  const body = document.getElementById('detail-body');
+
+  const tableById = Object.fromEntries(DATA.tables.map(t => [t.id, t]));
+
+  // Outgoing — polymorphic relations are collapsed into one grouped row.
+  const outgoing = [];
+  for (const rel of (table.relations || [])) {
+    if (rel.type === 'polymorphic') {
+      const raw = rel.targets || [];
+      const hasWildcard = raw.includes('*');
+      const targets = raw.filter(t => t !== '*' && tableById[t]);
+      if (targets.length === 0 && !hasWildcard) continue;
+      outgoing.push({ poly: true, type: 'polymorphic', label: rel.label, targets, hasWildcard });
+    } else {
+      const targets = rel.targets
+        ? rel.targets.filter(t => t !== '*')
+        : (rel.target ? [rel.target] : []);
+      for (const tgt of targets) outgoing.push({ poly: false, to: tgt, type: rel.type, label: rel.label });
+    }
+  }
+  const incoming = inverseRelations[id] || [];
+
+  // Enums shown on the table that owns them (`_home`) or references them (enum_ref).
+  // Proposed AND defined — only proposed ones are arbitrable.
+  const colObjs = (table.columns || []).map(col => typeof col === 'string' ? { name: col } : col);
+  const panelEnums = (DATA.enums || []).filter(e =>
+    e._home === id || colObjs.some(c => c.enum_ref === e.id));
+
+  function relRow(rel, isOutgoing) {
+    if (rel.poly) {
+      const wildcardChip = rel.hasWildcard
+        ? `<span class="rel-chip rel-chip-wildcard" title="targets any table">any</span>`
+        : '';
+      const chips = rel.targets.map(tgt => {
+        const name = tableById[tgt] ? tableById[tgt].name : tgt;
+        return `<span class="rel-chip navigable" data-target="${escapeHtml(tgt)}">${escapeHtml(name)}</span>`;
+      }).join('');
+      const hasNavigableTargets = rel.targets.length > 0;
+      const bundleAttr = hasNavigableTargets
+        ? ` data-bundle-targets="${escapeHtml(rel.targets.join(','))}"`
+        : '';
+      const cls = hasNavigableTargets ? ' detail-relation-bundle' : '';
+      return `
+        <div class="detail-relation poly${cls}"${bundleAttr}>
+          <span class="rel-type">polymorphic</span>
+          <span class="rel-poly-label">${escapeHtml(rel.label || '')}</span>
+          →
+          <span class="rel-chips">${chips}${wildcardChip}</span>
+        </div>
+      `;
+    }
+    const other = isOutgoing ? rel.to : rel.from;
+    const otherTable = tableById[other];
+    const otherName = otherTable ? otherTable.name : other;
+    const labelHtml = rel.label
+      ? `<span class="rel-label">"${escapeHtml(rel.label)}"</span>`
+      : '';
+    const navAttr = otherTable ? ` data-target="${escapeHtml(other)}"` : '';
+    // Reading direction follows the relation's actual subject:
+    //   outgoing: "this [type] → {other}"   → we [type] them
+    //   incoming: "{other} [type] → this"   → they [type] us
+    const typeSpan = `<span class="rel-type">${escapeHtml(rel.type)}</span>`;
+    const otherSpan = `<span class="rel-target">${escapeHtml(otherName)}</span>`;
+    const selfSpan = `<span class="rel-self">this</span>`;
+    const body = isOutgoing
+      ? `${selfSpan} ${typeSpan} → ${otherSpan} ${labelHtml}`
+      : `${otherSpan} ${typeSpan} → ${selfSpan} ${labelHtml}`;
+    return `
+      <div class="detail-relation${otherTable ? ' navigable' : ''}"${navAttr}>
+        ${body}
+      </div>
+    `;
+  }
+
+  body.innerHTML = `
+    <div class="detail-section">
+      <div class="detail-section-title">Japanese name</div>
+      <div>${escapeHtml(table.name_ja || '')}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Metadata</div>
+      <div class="detail-meta-row">
+        <span class="detail-badge" style="background:${color}">${escapeHtml(table.domain)}</span>
+        <span class="detail-badge" style="background:#718096">${escapeHtml(table.type)}</span>
+        <span class="detail-badge" style="background:${table.modeled ? '#48bb78' : '#ed8936'}">
+          ${table.modeled ? 'modeled' : 'planned'}
+        </span>
+        ${table.proposed ? `
+          <span class="badge proposed">proposed</span>
+          <button class="arb-btn${tableArb(id).ignore ? ' on' : ''}" data-arb="ignore-table">ignore table</button>
+        ` : ''}
+      </div>
+      ${table.proposed && (table._evidence || table._provenance) ? `
+        <div class="detail-evidence">evidence: ${escapeHtml(table._evidence || '—')} · provenance: ${escapeHtml(table._provenance || 'design')}</div>
+      ` : ''}
+      ${table.proposed && tableArb(id).ignore ? `
+        <div class="detail-arb-note">ignored — this table will be dropped from the arbitrated export</div>
+      ` : ''}
+    </div>
+
+    ${table.notes ? `
+      <div class="detail-section">
+        <div class="detail-section-title">Notes</div>
+        <div class="detail-notes">${escapeHtml(table.notes)}</div>
+      </div>
+    ` : ''}
+
+    ${Array.isArray(table.columns) && table.columns.length ? `
+      <div class="detail-section">
+        <div class="detail-section-title">Columns (${table.columns.length})</div>
+        <table class="detail-columns">
+          <thead><tr><th>Name</th><th>Type</th><th></th></tr></thead>
+          <tbody>
+            ${table.columns.map(col => {
+              const c = typeof col === 'string' ? { name: col } : col;
+              const fkTarget = c.fk && (typeof c.fk === 'string' ? c.fk : c.fk.table);
+              const arb = colArb(id, c.name);
+              const effType = (arb.type != null ? arb.type : (c.type || ''));
+              const refEnum = c.enum_ref && (DATA.enums || []).find(e => e.id === c.enum_ref);
+              const flags = [];
+              if (c.pk) flags.push('<span class="col-flag pk" title="primary key">PK</span>');
+              if (fkTarget) flags.push(`<span class="col-flag fk" title="references ${escapeHtml(fkTarget)}">FK→${escapeHtml(fkTarget)}</span>`);
+              if (c.nullable === false) flags.push('<span class="col-flag nn" title="NOT NULL">NN</span>');
+              if (c.unique) flags.push('<span class="col-flag" title="unique">U</span>');
+              if (c.enum_ref) {
+                if (refEnum && refEnum.proposed) flags.push(`<span class="col-flag proposed" title="references proposed enum">enum→${escapeHtml(refEnum.id)} (proposed)</span>`);
+                else if (refEnum) flags.push(`<span class="col-flag" title="references enum">enum→${escapeHtml(refEnum.id)}</span>`);
+                else flags.push(`<span class="col-flag enum-gap" title="enum_ref resolves to no enums[] entry (lattice gap)">enum→${escapeHtml(c.enum_ref)} (undefined)</span>`);
+              }
+              if (c.status === 'inferred') flags.push('<span class="col-flag inferred" title="derived from the id/FK convention, not an operator-confirmed atom">inferred</span>');
+              if (c.proposed) {
+                flags.push('<span class="col-flag proposed">proposed</span>');
+                flags.push(`<button class="arb-btn${arb.ignore ? ' on' : ''}" data-arb="ignore" data-col="${escapeHtml(c.name)}">ignore</button>`);
+                flags.push(`<button class="arb-btn${arb.type != null ? ' on' : ''}" data-arb="overrule" data-col="${escapeHtml(c.name)}">overrule</button>`);
+              }
+              const rowCls = [];
+              if (fkTarget && tableById[fkTarget]) rowCls.push('navigable');
+              if (arb.ignore) rowCls.push('arb-ignored');
+              if (c.status === 'inferred') rowCls.push('col-inferred');
+              const clsAttr = rowCls.length ? ` class="${rowCls.join(' ')}"` : '';
+              const tgtAttr = fkTarget && tableById[fkTarget] ? ` data-target="${escapeHtml(fkTarget)}"` : '';
+              return `
+                <tr${clsAttr}${tgtAttr}>
+                  <td class="col-name">${escapeHtml(c.name)}</td>
+                  <td class="col-type">${escapeHtml(effType)}</td>
+                  <td class="col-flags">${flags.join('')}</td>
+                </tr>
+                ${c.notes ? `<tr><td colspan="3" class="col-notes">${escapeHtml(c.notes)}</td></tr>` : ''}
+                ${c.proposed && (c._evidence || c._provenance) ? `<tr><td colspan="3" class="col-evidence">evidence: ${escapeHtml(c._evidence || '—')} · provenance: ${escapeHtml(c._provenance || 'design')}</td></tr>` : ''}
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : ''}
+
+    ${panelEnums.length ? `
+      <div class="detail-section">
+        <div class="detail-section-title">Enums (${panelEnums.length})</div>
+        <table class="detail-columns">
+          <tbody>
+            ${panelEnums.map(en => {
+              const values = (en.values || []).map(v =>
+                typeof v === 'string' ? v : (v.label || v.label_ja ? v.code + '=' + (v.label || v.label_ja) : v.code)
+              ).join(', ');
+              const ignored = en.proposed && enumArb(en.id).ignore;
+              const rowCls = [];
+              if (ignored) rowCls.push('arb-ignored');
+              if (en.status === 'inferred') rowCls.push('col-inferred');
+              const enFlags = [];
+              if (en.proposed) {
+                enFlags.push('<span class="col-flag proposed">proposed</span>');
+                enFlags.push(`<button class="arb-btn${ignored ? ' on' : ''}" data-arb="ignore-enum" data-enum="${escapeHtml(en.id)}">ignore</button>`);
+              } else if (en.status === 'inferred') {
+                enFlags.push('<span class="col-flag inferred" title="derived by convention, not an operator-confirmed atom">inferred</span>');
+              }
+              return `
+                <tr${rowCls.length ? ` class="${rowCls.join(' ')}"` : ''}>
+                  <td class="col-name">${escapeHtml(en.id)}</td>
+                  <td class="col-type">${escapeHtml(values)}</td>
+                  <td class="col-flags">${enFlags.join('')}</td>
+                </tr>
+                ${en._evidence || en._provenance ? `<tr><td colspan="3" class="col-evidence">evidence: ${escapeHtml(en._evidence || '—')} · provenance: ${escapeHtml(en._provenance || 'design')}</td></tr>` : ''}
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : ''}
+
+    <div class="detail-section">
+      <div class="detail-section-title">References (${outgoing.length})</div>
+      ${outgoing.length ? outgoing.map(r => relRow(r, true)).join('') : '<div style="color:#a0aec0;font-style:italic">No outgoing relations.</div>'}
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Referenced by (${incoming.length})</div>
+      ${incoming.length ? incoming.map(r => relRow(r, false)).join('') : '<div style="color:#a0aec0;font-style:italic">Not referenced by other tables.</div>'}
+    </div>
+
+    <button id="detail-hide-btn"></button>
+  `;
+
+  // Wire arbitration controls (proposal mode): per-column ignore/overrule,
+  // whole-table ignore, per-enum ignore.
+  body.querySelectorAll('.arb-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();                       // don't trigger row navigation
+    const kind = btn.dataset.arb;
+    if (kind === 'ignore-table') {
+      setArb('table::' + id, cur => { if (cur.ignore) delete cur.ignore; else cur.ignore = true; });
+    } else if (kind === 'ignore-enum') {
+      setArb('enum::' + btn.dataset.enum, cur => { if (cur.ignore) delete cur.ignore; else cur.ignore = true; });
+    } else {
+      const col = btn.dataset.col;
+      if (kind === 'ignore') {
+        setArb(id + '::' + col, cur => { if (cur.ignore) delete cur.ignore; else cur.ignore = true; });
+      } else {
+        const cur = colArb(id, col);
+        const nt = prompt('Overrule "' + col + '" type (blank = keep original):', cur.type != null ? cur.type : '');
+        if (nt === null) return;               // cancelled
+        setArb(id + '::' + col, c => { if (nt.trim()) c.type = nt.trim(); else delete c.type; });
+      }
+    }
+    openDetailPanel(id);                        // refresh the panel
+  }));
+
+  // Wire the hide button — text reflects current state
+  const hideBtn = document.getElementById('detail-hide-btn');
+  const isHidden = hiddenNodes.has(id) || cascadeHiddenNodes.has(id);
+  if (isHidden) {
+    hideBtn.textContent = 'Show this table';
+    hideBtn.classList.add('is-hidden');
+  } else {
+    hideBtn.textContent = 'Hide this table';
+    hideBtn.classList.remove('is-hidden');
+  }
+  hideBtn.addEventListener('click', () => {
+    toggleNodeVisibility(id);
+    openDetailPanel(id); // re-render panel to flip button state
+  });
+
+  // Navigable rows (relation rows + column rows with an FK) drive navigation on click
+  // and preview the link in the diagram on hover over the whole row.
+  body.querySelectorAll('.navigable[data-target]').forEach(el => {
+    const tgt = el.dataset.target;
+    if (!tableById[tgt]) return;
+    el.addEventListener('click', e => { e.stopPropagation(); openDetailPanel(tgt); });
+    el.addEventListener('mouseenter', () => setHoveredNode(tgt, 'detail', id));
+    el.addEventListener('mouseleave', () => setHoveredNode(null));
+  });
+
+  // Grouped polymorphic rows: hover the row → highlight all (anchor → target_i) edges in orange.
+  body.querySelectorAll('[data-bundle-targets]').forEach(el => {
+    const targets = el.dataset.bundleTargets.split(',').filter(Boolean);
+    el.addEventListener('mouseenter', () => setHoveredNode(id, 'detail', targets));
+    el.addEventListener('mouseleave', () => setHoveredNode(null));
+  });
+
+  // Scroll the diagram to bring the table into view (matches previous highlight behavior)
+  const pos = positions[id];
+  if (pos) {
+    const wrap = document.getElementById('diagram-wrap');
+    wrap.scrollTo({
+      left: Math.max(0, pos.x - wrap.clientWidth / 2 + NODE_W / 2),
+      top: Math.max(0, pos.y - wrap.clientHeight / 2 + NODE_H / 2),
+      behavior: 'smooth',
+    });
+  }
+
+  render();
+  setHoveredNode(null); // re-applies focus emphasis to the newly selected node
+}
+
+function closeDetailPanel() {
+  document.getElementById('detail-panel').classList.add('closed');
+  openPanelId = null;
+  highlightedNode = null;
+  render();
+  setHoveredNode(null); // clears emphasis now that nothing is selected
+}
+
+function getNeighbors(id) {
+  const neighbors = new Set();
+  for (const t of DATA.tables) {
+    for (const rel of (t.relations || [])) {
+      const targets = rel.targets
+        ? rel.targets.filter(x => x !== '*')
+        : rel.target ? [rel.target] : [];
+      if (t.id === id) {
+        targets.forEach(tgt => neighbors.add(tgt));
+      }
+      if (targets.includes(id)) {
+        neighbors.add(t.id);
+      }
+    }
+  }
+  return [...neighbors].filter(n => DATA.tables.find(t => t.id === n));
+}
+
+function renderSidebar() {
+  const nav = document.getElementById('sidebar');
+  nav.innerHTML = '';
+
+  const byDomain = {};
+  for (const d of DOMAIN_ORDER) byDomain[d] = [];
+  for (const t of DATA.tables) {
+    if (!byDomain[t.domain]) {
+      console.warn(`Unknown domain "${t.domain}" for table "${t.id}" — not in DOMAIN_ORDER`);
+      continue;
+    }
+    byDomain[t.domain].push(t);
+  }
+
+  for (const domain of DOMAIN_ORDER) {
+    const tables = byDomain[domain] || [];
+    if (!tables.length) continue;
+
+    const color = DOMAIN_COLORS[domain] || '#999';
+
+    const anyVisible = tables.some(matchesProposedFilter);
+    if (!anyVisible) continue;
+
+    const domainEl = document.createElement('div');
+    domainEl.className = 'sidebar-domain';
+    const label = document.createElement('div');
+    label.className = 'sidebar-domain-label';
+    label.style.color = color;
+    label.textContent = domain.toUpperCase();
+    domainEl.appendChild(label);
+    nav.appendChild(domainEl);
+
+    for (const t of tables) {
+      if (!matchesProposedFilter(t)) continue;
+      const row = document.createElement('div');
+      row.className = 'sidebar-table';
+      row.dataset.id = t.id;
+      const isHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id) || hiddenDomains.has(t.domain);
+      if (isHidden) row.classList.add('hidden-node');
+      if (highlightedNode === t.id) row.classList.add('highlighted');
+      const isArbIgnored = !!(t.proposed && tableArb(t.id).ignore);
+      if (isArbIgnored) row.classList.add('arb-ignored');
+
+      const domainOff = hiddenDomains.has(t.domain);
+      const userHidden = hiddenNodes.has(t.id) || cascadeHiddenNodes.has(t.id);
+      const eyeChar = (userHidden || domainOff) ? '○' : '●';
+      const eyeClasses = ['eye-toggle'];
+      if (userHidden || domainOff) eyeClasses.push('hidden-state');
+      if (domainOff) eyeClasses.push('disabled');
+
+      row.innerHTML = `
+        <button class="${eyeClasses.join(' ')}" title="Toggle visibility">${eyeChar}</button>
+        <div class="row-body">
+          <div class="table-name-en">${t.name}</div>
+          <div class="table-name-ja">${t.name_ja || ''}</div>
+          <div class="table-badges">
+            <span class="badge">${t.type}</span>
+            ${!t.modeled ? '<span class="badge not-modeled">planned</span>' : ''}
+            ${t.proposed ? `<span class="badge proposed">${isArbIgnored ? 'ignored' : 'proposed'}</span>` : ''}
+          </div>
+        </div>
+      `;
+
+      const eyeBtn = row.querySelector('.eye-toggle');
+      eyeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (domainOff) return;
+        toggleNodeVisibility(t.id);
+      });
+
+      row.querySelector('.row-body').addEventListener('click', () => openDetailPanel(t.id));
+      row.addEventListener('mouseenter', () => setHoveredNode(t.id));
+      row.addEventListener('mouseleave', () => setHoveredNode(null));
+      nav.appendChild(row);
+    }
+  }
+}
+
+function renderDomainFilters() {
+  const container = document.getElementById('domain-filters');
+  container.innerHTML = '';
+
+  for (const domain of DOMAIN_ORDER) {
+    const color = DOMAIN_COLORS[domain] || '#999';
+    const isOff = hiddenDomains.has(domain);
+
+    const chip = document.createElement('label');
+    chip.className = 'domain-chip' + (isOff ? ' off' : '');
+    chip.style.background = color;
+    chip.innerHTML = `<input type="checkbox" ${isOff ? '' : 'checked'}> ${domain}`;
+    chip.querySelector('input').addEventListener('change', (e) => {
+      toggleDomain(domain, e.target.checked);
+    });
+    container.appendChild(chip);
+  }
+}
+
+function toggleDomain(domain, enabled) {
+  if (enabled) {
+    hiddenDomains.delete(domain);
+  } else {
+    hiddenDomains.add(domain);
+  }
+  // Recompute cascade-hidden set from scratch
+  cascadeHiddenNodes.clear();
+  recomputeCascade();
+  render();
+}
+
+function render() {
+  renderEdges(getVisibleIds());
+  renderNodes();
+  renderSidebar();
+  renderDomainFilters();
+}
+
+function resetState() {
+  hiddenNodes.clear();
+  cascadeHiddenNodes.clear();
+  hiddenDomains.clear();
+  proposedFilter = 'all';
+  const filterEl = document.getElementById('proposed-filter');
+  if (filterEl) filterEl.value = 'all';
+  highlightedNode = null;
+  closeDetailPanel();
+  render();
+}
+
+function highlightNode(id) {
+  highlightedNode = highlightedNode === id ? null : id;
+  render();
+  setHoveredNode(null);
+
+  if (highlightedNode) {
+    const pos = positions[id];
+    if (!pos) return;
+    const wrap = document.getElementById('diagram-wrap');
+    wrap.scrollTo({
+      left: Math.max(0, pos.x - wrap.clientWidth / 2 + NODE_W / 2),
+      top: Math.max(0, pos.y - wrap.clientHeight / 2 + NODE_H / 2),
+      behavior: 'smooth',
+    });
+  }
+}
+
+function setHoveredNode(id, source, pairWith) {
+  // pairWith may be a string (single-leg orange overlay) or string[] (bundle).
+  const svg = document.getElementById('diagram');
+  // When clearing hover, fall back to the selected node so its neighbours stay emphasised.
+  if (id == null && highlightedNode) {
+    id = highlightedNode;
+    source = undefined;
+    pairWith = undefined;
+  }
+  const isArrayPair = Array.isArray(pairWith);
+  const pairTargets = pairWith == null
+    ? []
+    : (isArrayPair ? pairWith : [pairWith]);
+  const isPair = source === 'detail' && pairTargets.length > 0 && id;
+  // For single (string pairWith): id=hovered target, pairWith=anchor.
+  // For bundle (array pairWith): id=anchor, pairWith=targets.
+  const anchor = isPair ? (isArrayPair ? id : pairWith) : id;
+  const pairSet = new Set(isPair ? (isArrayPair ? pairTargets : [id]) : []);
+  document.body.classList.toggle('hovering-from-detail', isPair);
+  if (anchor) {
+    document.body.classList.add('hovering');
+    svg.querySelectorAll('.edge').forEach(g => {
+      const { from, to } = g.dataset;
+      const touching = from === anchor || to === anchor;
+      g.classList.toggle('is-touching', touching);
+      const pairEdge = isPair && (
+        (from === anchor && pairSet.has(to)) ||
+        (to === anchor && pairSet.has(from))
+      );
+      g.classList.toggle('is-pair', pairEdge);
+    });
+    svg.querySelectorAll('.node').forEach(g => {
+      const nid = g.dataset.id;
+      const touching =
+        nid === anchor ||
+        Array.from(svg.querySelectorAll('.edge.is-touching')).some(
+          e => e.dataset.from === nid || e.dataset.to === nid
+        );
+      g.classList.toggle('is-touching-hover', touching);
+      g.classList.toggle('is-pair', isPair && pairSet.has(nid));
+    });
+  } else {
+    document.body.classList.remove('hovering');
+    svg.querySelectorAll('.edge.is-touching').forEach(g => g.classList.remove('is-touching'));
+    svg.querySelectorAll('.edge.is-pair').forEach(g => g.classList.remove('is-pair'));
+    svg.querySelectorAll('.node.is-touching-hover').forEach(g => g.classList.remove('is-touching-hover'));
+    svg.querySelectorAll('.node.is-pair').forEach(g => g.classList.remove('is-pair'));
+  }
+}
+
+const STORAGE_KEY = 'flatbase.tables.json';
+
+const DEFAULT_PALETTE = [
+  '#4E79A7', '#F28E2B', '#59A14F', '#B07AA1',
+  '#E15759', '#76B7B2', '#9C755F', '#EDC948',
+  '#FF9DA7', '#BAB0AC',
+];
+
+function deriveDomains(tables) {
+  const seen = [];
+  for (const t of tables) {
+    if (t.domain && !seen.includes(t.domain)) seen.push(t.domain);
+  }
+  return seen.map((id, i) => ({ id, color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] }));
+}
+
+// Normalize a raw schema (single-file or bundled from folder) into the shape
+// the renderer expects. See docs/FORMAT.md for the canonical format.
+function normalizeData(data) {
+  if (!data || !Array.isArray(data.tables)) {
+    throw new Error('missing "tables" array');
+  }
+
+  // Snapshot the pristine input BEFORE mutation (source for the arbitrated export), and
+  // detect proposal mode = any element carries `proposed: true`.
+  RAW_INPUT = JSON.parse(JSON.stringify(data));
+  data.__hasProposed = data.tables.some(t =>
+      t.proposed || (Array.isArray(t.columns) && t.columns.some(c => typeof c === 'object' && c.proposed))
+                 || (Array.isArray(t.relations) && t.relations.some(r => r && r.proposed)))
+    || (Array.isArray(data.enums) && data.enums.some(e => e.proposed));
+
+  if (!Array.isArray(data.domains) || data.domains.length === 0) {
+    data.domains = deriveDomains(data.tables);
+  } else {
+    // Fill in missing colors from the palette in declaration order
+    data.domains = data.domains.map((d, i) => ({
+      ...d,
+      color: d.color || DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+    }));
+  }
+
+  for (const t of data.tables) {
+    // status (preferred) ↔ modeled (legacy alias)
+    if (t.status !== undefined) {
+      t.modeled = t.status === 'complete';
+    } else if (t.modeled === undefined) {
+      t.modeled = true;
+    }
+
+    // Normalize fk: object → string id (preserve original on `fk_ref`)
+    for (const col of (t.columns || [])) {
+      if (col && typeof col === 'object' && col.fk && typeof col.fk === 'object') {
+        col.fk_ref = col.fk;
+        col.fk = col.fk.table;
+      }
+    }
+  }
+
+  deriveRelations(data.tables);
+  return data;
+}
+
+function deriveRelations(tables) {
+  const tableById = Object.fromEntries(tables.map(t => [t.id, t]));
+
+  // Pass 1 — for tables without explicit relations, derive belongs_to and polymorphic from columns.
+  for (const t of tables) {
+    if (Array.isArray(t.relations) && t.relations.length > 0) continue;
+    const rels = [];
+    for (const col of (t.columns || [])) {
+      if (!col || typeof col !== 'object') continue;
+      // Derived relations inherit `proposed` from their carrying column (or the whole
+      // table); via/viaTable point back to that column so arbitration can drop the edge.
+      const proposed = !!(col.proposed || t.proposed);
+      if (col.polymorphic && Array.isArray(col.polymorphic.targets)) {
+        rels.push({ type: 'polymorphic', targets: col.polymorphic.targets, label: col.name,
+                    proposed, via: col.name, viaTable: t.id });
+      } else if (col.fk) {
+        rels.push({ type: 'belongs_to', target: col.fk, label: col.name,
+                    proposed, via: col.name, viaTable: t.id });
+      }
+    }
+    t.relations = rels;
+  }
+
+  // Pass 2 — inject has_many on each parent for any belongs_to that doesn't have a matching forward relation.
+  for (const child of tables) {
+    for (const rel of (child.relations || [])) {
+      if (rel.type !== 'belongs_to') continue;
+      const parent = tableById[rel.target];
+      if (!parent) continue;
+      parent.relations = parent.relations || [];
+      const exists = parent.relations.some(r =>
+        (r.target === child.id || (r.targets || []).includes(child.id)) &&
+        (r.type === 'has_many' || r.type === 'has_one' || r.type === 'extends' || r.type === 'many_to_many')
+      );
+      if (!exists) parent.relations.push({ type: 'has_many', target: child.id,
+        proposed: !!rel.proposed, via: rel.via, viaTable: rel.viaTable || child.id });
+    }
+  }
+
+  // Pass 3 — extension tables: replace the parent's auto-injected has_many with extends.
+  for (const child of tables) {
+    if (child.type !== 'extension') continue;
+    const pkFk = (child.columns || []).find(c => c && typeof c === 'object' && c.pk && c.fk);
+    if (!pkFk) continue;
+    const parent = tableById[pkFk.fk];
+    if (!parent) continue;
+    parent.relations = (parent.relations || []).filter(r =>
+      !(r.type === 'has_many' && r.target === child.id)
+    );
+    const already = parent.relations.some(r =>
+      r.type === 'extends' && (r.target === child.id || (r.targets || []).includes(child.id))
+    );
+    if (!already) parent.relations.push({ type: 'extends', target: child.id,
+      proposed: !!(pkFk.proposed || child.proposed), via: pkFk.name, viaTable: child.id });
+  }
+}
+
+function loadCachedData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+// --- Folder / multi-file ingestion -----------------------------------------
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('Could not read ' + file.name));
+    r.readAsText(file);
+  });
+}
+
+function fileFromEntry(entry) {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+function listDirEntry(dirEntry) {
+  return new Promise((resolve, reject) => {
+    const reader = dirEntry.createReader();
+    const all = [];
+    const readBatch = () => reader.readEntries(entries => {
+      if (entries.length === 0) resolve(all);
+      else { all.push(...entries); readBatch(); }
+    }, reject);
+    readBatch();
+  });
+}
+
+async function collectJsonFromDir(dirEntry) {
+  const files = {};
+  const entries = await listDirEntry(dirEntry);
+  for (const e of entries) {
+    if (!e.isFile || !e.name.endsWith('.json')) continue;
+    const f = await fileFromEntry(e);
+    files[e.name] = await readFileAsText(f);
+  }
+  return files;
+}
+
+async function collectJsonFromFileList(fileList) {
+  const files = {};
+  for (const f of fileList) {
+    if (!f.name.endsWith('.json')) continue;
+    files[f.name] = await readFileAsText(f);
+  }
+  return files;
+}
+
+// Turn a {filename → text} map of a multi-file folder into the canonical shape.
+function bundleMultiFile(filesByName) {
+  if (!filesByName['index.json']) {
+    throw new Error('Multi-file drop requires an index.json.');
+  }
+  const index = JSON.parse(filesByName['index.json']);
+  if (!Array.isArray(index.domains)) {
+    throw new Error('index.json: missing "domains" array.');
+  }
+
+  const domains = index.domains.map((d, i) => ({
+    id: d.id,
+    color: d.color || DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+  }));
+
+  const tables = [];
+  for (const d of index.domains) {
+    const fname = d.file || `${d.id}.json`;
+    const raw = filesByName[fname];
+    if (!raw) throw new Error(`Missing ${fname} (referenced by domain "${d.id}").`);
+    const parsed = JSON.parse(raw);
+    for (const t of (parsed.tables || [])) {
+      tables.push({ ...t, domain: t.domain || parsed.domain || d.id });
+    }
+  }
+
+  const enumsFile = index.enums_file || 'enums.json';
+  let enums = [];
+  if (filesByName[enumsFile]) {
+    try {
+      const parsed = JSON.parse(filesByName[enumsFile]);
+      enums = Array.isArray(parsed.enums) ? parsed.enums : [];
+    } catch (e) {
+      throw new Error(`${enumsFile}: ${e.message}`);
+    }
+  }
+
+  return { meta: index.meta || {}, domains, enums, tables };
+}
+
+// Inspect a DataTransfer and produce a raw (pre-normalization) data object.
+async function readDrop(dt) {
+  // 1. Directory entry?
+  if (dt.items) {
+    for (const it of dt.items) {
+      const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (entry && entry.isDirectory) {
+        const files = await collectJsonFromDir(entry);
+        return bundleMultiFile(files);
+      }
+    }
+  }
+  // 2. Multiple files with index.json → treat as multi-file bundle.
+  const fileList = [...(dt.files || [])];
+  if (fileList.length > 1 && fileList.some(f => f.name === 'index.json')) {
+    const files = await collectJsonFromFileList(fileList);
+    return bundleMultiFile(files);
+  }
+  // 3. Single file.
+  if (fileList[0]) {
+    const text = await readFileAsText(fileList[0]);
+    return JSON.parse(text);
+  }
+  throw new Error('Drop a tables.json file or a schema/ folder.');
+}
+
+function pickFile() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.id = 'data-picker';
+    Object.assign(overlay.style, {
+      position: 'fixed', inset: '0', background: 'rgba(30,30,46,0.97)',
+      color: '#cdd6f4', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: '9999', padding: '24px', fontFamily: 'system-ui, sans-serif',
+    });
+    overlay.innerHTML = `
+      <div id="drop-zone" style="max-width:560px;width:100%;border:2px dashed #45475a;border-radius:12px;padding:40px 32px;text-align:center;cursor:pointer;transition:border-color 0.15s, background 0.15s;">
+        <h1 style="font-size:20px;margin-bottom:12px;">Load a schema</h1>
+        <p style="margin-bottom:8px;opacity:0.8;">Drop a <code style="background:#313244;padding:1px 6px;border-radius:3px;">tables.json</code> file <em>or</em> a multi-file <code style="background:#313244;padding:1px 6px;border-radius:3px;">schema/</code> folder (multi-file layout).</p>
+        <p style="font-size:12px;opacity:0.55;margin-bottom:24px;">Cached in your browser; no server, no upload. Format spec: <code style="background:#313244;padding:1px 5px;border-radius:3px;">docs/FORMAT.md</code>.</p>
+        <p style="font-size:11px;opacity:0.5;">First time? Copy the bundled example:</p>
+        <pre style="background:#11111b;padding:8px 12px;border-radius:6px;display:inline-block;margin-top:6px;font-size:11px;">cp tables.json.example tables.json</pre>
+        <p id="picker-error" style="color:#f38ba8;font-size:12px;margin-top:16px;min-height:1.2em;white-space:pre-wrap;"></p>
+        <input id="file-input" type="file" accept=".json,application/json" style="display:none;">
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const dz = overlay.querySelector('#drop-zone');
+    const input = overlay.querySelector('#file-input');
+    const errEl = overlay.querySelector('#picker-error');
+
+    const setError = msg => { errEl.textContent = msg; };
+    const setHover = on => {
+      dz.style.borderColor = on ? '#89b4fa' : '#45475a';
+      dz.style.background = on ? 'rgba(137,180,250,0.05)' : 'transparent';
+    };
+
+    const acceptRaw = (raw) => {
+      try {
+        const data = normalizeData(raw);
+        // Cache the PRISTINE input (normalizeData snapshots it into RAW_INPUT before it
+        // mutates in place), so a later reload re-snapshots pristine data — the arbitrated
+        // export must not carry normalize-injected fields (modeled/relations/fk_ref…).
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(RAW_INPUT));
+        overlay.remove();
+        resolve(data);
+      } catch (e) { setError('Invalid schema: ' + e.message); }
+    };
+
+    dz.addEventListener('click', () => input.click());
+    input.addEventListener('change', async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try { acceptRaw(JSON.parse(await readFileAsText(file))); }
+      catch (err) { setError(err.message); }
+    });
+    dz.addEventListener('dragover', e => { e.preventDefault(); setHover(true); });
+    dz.addEventListener('dragleave', () => setHover(false));
+    dz.addEventListener('drop', async e => {
+      e.preventDefault(); setHover(false);
+      try { acceptRaw(await readDrop(e.dataTransfer)); }
+      catch (err) { setError(err.message); }
+    });
+    overlay.addEventListener('dragover', e => e.preventDefault());
+    overlay.addEventListener('drop', e => e.preventDefault());
+  });
+}
+
+function slugifyMeta(meta) {
+  const src = (meta && (meta.version || meta.scope)) || 'schema';
+  return String(src)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'schema';
+}
+
+// Produces a self-contained HTML string that, when opened, runs the same
+// viewer with DATA baked in as window.__BAKED_DATA__. Reads the live
+// document's <style> and main <script> so the output stays in sync with
+// the source file automatically.
+function buildFrozenHTML(data) {
+  // Inside this function we MUST NOT write the literal byte sequence
+  // `<` + `/script>` in any comment or template — the HTML parser
+  // scanning db-viewer.html in script-data state would treat it as
+  // the closing tag of THIS script and abort parsing. Regex literals
+  // are safe because `<\/` breaks the match. Strings emitted at
+  // runtime use SC, built from concatenation so the source bytes
+  // never form the dangerous sequence.
+  const SC = '</' + 'script>';
+
+  const styleText  = document.querySelector('style').textContent;
+  const scriptText = document.querySelector('script').textContent;
+  const slug       = slugifyMeta(data.meta);
+  const title      = data.meta && (data.meta.scope || data.meta.version)
+    ? `flatbase — ${slug}`
+    : 'flatbase';
+
+  // User-authored strings might contain the close-script sequence — escape
+  // it so the inline data block can't be closed prematurely in the export.
+  const jsonText = JSON.stringify(data).replace(/<\/script>/gi, '<\\/script>');
+
+  // Hardcoded body skeleton — must match the source file's <body> markup
+  // (minus runtime-injected children). Keep in sync if the source body
+  // structure changes.
+  const bodyMarkup = `
+<header id="header">
+  <span class="app-title">flatbase <small>v0.5</small></span>
+  <div id="domain-filters"></div>
+  <select id="proposed-filter" title="Filter by proposed/defined">
+    <option value="all">Show: All</option>
+    <option value="proposed">Proposed only</option>
+    <option value="defined">Defined only</option>
+  </select>
+  <button id="reset-btn">Reset</button>
+  <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
+  <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+</header>
+
+<div id="main">
+  <nav id="sidebar"></nav>
+  <div id="diagram-wrap">
+    <svg id="diagram">
+      <defs id="svg-defs"></defs>
+    </svg>
+  </div>
+  <aside id="detail-panel" class="closed">
+    <header>
+      <h2 id="detail-name-en"></h2>
+      <button id="detail-close" aria-label="Close">×</button>
+    </header>
+    <div id="detail-body"></div>
+  </aside>
+</div>`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title}</title>
+<style>${styleText}</style>
+</head>
+<body>
+${bodyMarkup}
+<script>window.__BAKED_DATA__ = ${jsonText};${SC}
+<script>${scriptText}${SC}
+</body>
+</html>
+`;
+}
+
+function exportFrozenHTML() {
+  if (!DATA || !RAW_INPUT) return;
+  // Bake the PRISTINE input, not the normalized DATA: the frozen load path re-runs
+  // normalizeData() anyway, and it keeps RAW_INPUT clean in the frozen viewer so the
+  // ↓ Proposal export stays free of normalize-injected fields.
+  const html = buildFrozenHTML(RAW_INPUT);
+  const blob = new Blob([html], { type: 'text/html' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `flatbase-${slugifyMeta(DATA.meta)}.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function loadData() {
+  if (window.__BAKED_DATA__) {
+    // Baked HTML: data is inlined, skip cache and picker entirely.
+    return normalizeData(window.__BAKED_DATA__);
+  }
+  const cached = loadCachedData();
+  if (cached) {
+    try { return normalizeData(cached); }
+    catch { /* fall through to picker if cache is unparseable */ }
+  }
+  return await pickFile();
+}
+
+function clearCachedData() {
+  localStorage.removeItem(STORAGE_KEY);
+  // Arbitration decisions belong to the loaded proposal — a data reset discards them too,
+  // so a new proposal with the same meta.project never inherits stale decisions.
+  try { if (DATA) localStorage.removeItem(arbKey()); } catch {}
+  location.reload();
+}
+
+async function init() {
+  DATA = await loadData();
+  DOMAIN_ORDER = DATA.domains.map(d => d.id);
+  DOMAIN_COLORS = Object.fromEntries(DATA.domains.map(d => [d.id, d.color]));
+
+  computePositions();
+  buildInverseRelations();
+  setSVGSize();
+  setupDefs();
+  render();
+
+  document.getElementById('reset-btn').addEventListener('click', resetState);
+  document.getElementById('proposed-filter').addEventListener('change', (e) => {
+    proposedFilter = e.target.value;
+    render();
+  });
+  document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
+  document.getElementById('export-proposal-btn').addEventListener('click', exportProposal);
+  if (DATA.__hasProposed) {
+    loadArbitration();
+    document.getElementById('export-proposal-btn').style.display = '';
+  }
+  const reloadBtn = document.getElementById('reload-data-btn');
+  if (window.__BAKED_DATA__) {
+    reloadBtn.style.display = 'none';
+  } else {
+    reloadBtn.addEventListener('click', clearCachedData);
+  }
+  document.getElementById('detail-close').addEventListener('click', closeDetailPanel);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && openPanelId) closeDetailPanel();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
