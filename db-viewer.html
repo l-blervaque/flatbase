@@ -58,7 +58,7 @@
       border-radius: 3px;
     }
 
-    #reset-btn, #export-btn, #reload-data-btn, #fit-btn {
+    #reset-btn, #export-btn, #reload-data-btn, #menu-btn, #zoom-out-btn, #zoom-in-btn {
       background: #313244;
       color: #cdd6f4;
       border: 1px solid #45475a;
@@ -68,7 +68,48 @@
       font-size: 12px;
       white-space: nowrap;
     }
-    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover, #fit-btn:hover { background: #45475a; }
+    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover, #menu-btn:hover, #zoom-out-btn:hover, #zoom-in-btn:hover { background: #45475a; }
+    #zoom-out-btn, #zoom-in-btn { min-width: 30px; font-weight: 600; }
+    #menu-btn { min-width: 34px; font-size: 15px; line-height: 1; padding: 4px 9px; }
+
+    /* Hamburger dropdown — anchored under the ☰ button at the header's right. */
+    #menu-wrap { position: relative; }
+    #menu-panel {
+      position: absolute; top: calc(100% + 6px); right: 0;
+      display: flex; flex-direction: column; gap: 5px;
+      background: #1e1e2e; border: 1px solid #45475a; border-radius: 8px;
+      padding: 6px; min-width: 168px; z-index: 20;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    }
+    #menu-panel.hidden { display: none; }
+    #menu-panel button { width: 100%; text-align: left; }
+
+    /* View-mode segmented toggle (Conceptual | Logical) — lives in the light sidebar. */
+    #mode-toggle { display: flex; border: 1px solid #cbd5e0; border-radius: 5px; overflow: hidden; margin-bottom: 8px; }
+    #mode-toggle button {
+      flex: 1; background: #fff; color: #4a5568; border: 0; border-radius: 0;
+      padding: 5px 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    #mode-toggle button + button { border-left: 1px solid #cbd5e0; }
+    #mode-toggle button:hover { background: #f0f0f0; }
+    #mode-toggle button.on { background: #475569; color: #fff; }
+
+    /* Logical-mode table node: header band + column rows */
+    .node.logical .lg-name { font-weight: 700; font-size: 11.5px; }
+    .node.logical .lg-name-ja { font-size: 9px; }
+    .node.logical .lg-badge { font-size: 8.5px; font-weight: 700; }
+    .node.logical .lg-col { font-size: 10px; fill: #2d3748; }
+    .node.logical .lg-col.proposed { fill: #7c3aed; }
+    .node.logical .lg-col.inferred { font-style: italic; fill: #718096; }
+    .node.logical .lg-col.ignored { text-decoration: line-through; opacity: 0.55; }
+    .node.logical .lg-stripe { fill: #000; opacity: 0.04; }
+    .node.logical .lg-overflow { font-size: 9.5px; fill: #94a3b8; font-style: italic; }
+    .node.logical .lg-rowhi { fill: #f59e0b; opacity: 0; pointer-events: none; }
+    /* Row highlight under focus: amber background fill + bold column name. The fill
+       lives on the background rect so text colour semantics (proposed-violet,
+       inferred-italic, ignored-strikethrough) are never overwritten. */
+    .node.logical .lg-rowhi.row-hi { opacity: 0.3; }
+    .node.logical .lg-col.row-hi { font-weight: 700; }
 
     #main {
       display: flex;
@@ -452,21 +493,26 @@
 <header id="header">
   <span class="app-title">flatbase <small>v0.5</small></span>
   <div id="domain-filters"></div>
-  <select id="proposed-filter" title="Filter by proposed/defined">
-    <option value="all">Show: All</option>
-    <option value="proposed">Proposed only</option>
-    <option value="defined">Defined only</option>
-  </select>
-  <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
-  <button id="reset-btn">Reset</button>
-  <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
-  <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
-  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+  <button id="zoom-out-btn" title="Zoom out">−</button>
+  <button id="zoom-in-btn" title="Zoom in">+</button>
+  <div id="menu-wrap">
+    <button id="menu-btn" title="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
+    <div id="menu-panel" class="hidden">
+      <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+      <button id="reset-btn">Reset</button>
+      <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
+      <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+    </div>
+  </div>
 </header>
 
 <div id="main">
   <nav id="sidebar">
     <div id="sidebar-tools">
+      <div id="mode-toggle" title="Conceptual = entity boxes · Logical = column rows">
+        <button id="mode-conceptual" class="on" data-mode="conceptual">Conceptual</button>
+        <button id="mode-logical" data-mode="logical">Logical</button>
+      </div>
       <input id="sidebar-search" type="search" placeholder="Search tables…" autocomplete="off">
       <div id="sidebar-count"></div>
     </div>
@@ -497,6 +543,28 @@ let DOMAIN_COLORS = {};
 
 const NODE_W = 190;
 const NODE_H = 72;
+
+// Logical-mode geometry: tall table nodes with a header band + one row per column.
+const LOG_W = 220;             // wider than conceptual (column names are long)
+const LOG_HEADER = 30;         // header band (name + small name_ja)
+const LOG_ROWH = 18;           // per-column row height
+const LOG_ROWCAP = 12;         // max column rows before a "… +N" summary row
+
+// View mode: 'conceptual' (entity boxes) | 'logical' (column rows). Persisted as a
+// viewing preference (NOT cleared by ↻ Data or Reset). Read at module load so the
+// first paint, layoutKey() and node geometry all reflect the persisted mode.
+let viewMode = 'conceptual';
+try { const m = localStorage.getItem('flatbase.viewmode'); if (m === 'logical' || m === 'conceptual') viewMode = m; } catch {}
+
+// id → table lookup (rebuilt in init after DATA loads); used by the layout/geometry
+// helpers that only have a node id in hand.
+let TBY = {};
+// Logical row index: tid → { byName: {colName: {cy, fr, badge, name}}, overflowCy }.
+// cy is the row's LOCAL center-y within the node group. Every column name maps to the
+// row it visually lands on — its own row if visible, else the overflow "… +N" row — so
+// P2's field-anchored edges can resolve any FK column, capped or not. DOM refs (fr/badge/
+// name) are for P2 row highlighting only; geometry (cy) is a pure function of the model.
+let nodeRowEls = {};
 
 // Mutable state
 let hiddenNodes = new Set();
@@ -535,6 +603,105 @@ function matchesProposedFilter(t) {
   if (proposedFilter === 'proposed') return !!t.proposed;
   if (proposedFilter === 'defined')  return !t.proposed;
   return true;
+}
+
+// ---- logical-mode node geometry ----
+// Per-node width/height. Conceptual returns the historical constants (so conceptual
+// layout / fit / anchoring is byte-identical after the refactor); logical grows with
+// the visible column-row count.
+function nodeWidth(t)  { return viewMode === 'logical' ? LOG_W : NODE_W; }
+function nodeHeight(t) {
+  if (viewMode !== 'logical') return NODE_H;
+  const { rows, overflow } = logicalRows(t);
+  const n = rows.length + (overflow > 0 ? 1 : 0);
+  return LOG_HEADER + n * LOG_ROWH;          // header-only box (LOG_HEADER) when no columns
+}
+
+// Column accessors — a column entry may be a plain string (FORMAT.md) or an object.
+function tableColumns(t) { return Array.isArray(t.columns) ? t.columns : []; }
+function colObj(col)     { return typeof col === 'string' ? { name: col } : (col || {}); }
+function colFkTarget(c)  { return c.fk ? (typeof c.fk === 'string' ? c.fk : (c.fk && c.fk.table)) : null; }
+
+// Ordered, capped set of logical rows for a table + the overflow count. Ordering:
+// PK first, then FK columns (schema order), then the rest (schema order) — so most
+// real FK/PK anchors survive the 12-row cap.
+function logicalRows(t) {
+  const cols = tableColumns(t).map((col, i) => ({ raw: col, c: colObj(col), i }));
+  const pk   = cols.filter(r => r.c.pk);
+  const fk   = cols.filter(r => !r.c.pk && colFkTarget(r.c));
+  const rest = cols.filter(r => !r.c.pk && !colFkTarget(r.c));
+  // Dedupe by column name (first occurrence wins) so the row anchor
+  // (logicalRowCY's findIndex) and the row highlight (renderLogicalBody's byName,
+  // last-write-wins) resolve to the SAME row for a table with duplicate column names.
+  const seen = new Set();
+  const ordered = pk.concat(fk, rest).filter(r => {
+    const nm = r.c.name;
+    if (nm == null) return true;
+    if (seen.has(nm)) return false;
+    seen.add(nm); return true;
+  });
+  if (ordered.length <= LOG_ROWCAP) return { rows: ordered, overflow: 0, all: ordered };
+  return { rows: ordered.slice(0, LOG_ROWCAP), overflow: ordered.length - LOG_ROWCAP, all: ordered };
+}
+
+// Row LOCAL center-Y (in the node group) for a column, mirroring renderLogicalBody /
+// nodeRowEls exactly: a capped column resolves to the overflow row. Pure function of
+// the model, so edgeGeometry (which runs before renderNodes) can anchor to rows.
+function logicalRowCY(t, colName) {
+  const { rows, overflow } = logicalRows(t);
+  const idx = rows.findIndex(r => r.c.name === colName);
+  if (idx >= 0) return LOG_HEADER + idx * LOG_ROWH + LOG_ROWH / 2;
+  if (overflow > 0 && tableColumns(t).some(col => colObj(col).name === colName))
+    return LOG_HEADER + rows.length * LOG_ROWH + LOG_ROWH / 2;  // capped → overflow row
+  return null;
+}
+function firstPkName(t) {
+  for (const col of tableColumns(t)) { const c = colObj(col); if (c.pk) return c.name; }
+  return null;
+}
+// The ONE resolver of "which column row does `endId` anchor to" — shared by the
+// edge geometry (row Y) and the focus row highlight, so anchor and highlight can
+// never drift. The via/viaTable end anchors at its FK column; the other end at the
+// target's PK column when one exists. null → header band (edges without via, or an
+// unresolvable column).
+function anchorColName(edge, endId, endT) {
+  if (!edge.via || !edge.viaTable) return null;
+  if (edge.viaTable === endId) return logicalRowCY(endT, edge.via) != null ? edge.via : null;
+  const pk = firstPkName(endT);
+  return pk && logicalRowCY(endT, pk) != null ? pk : null;
+}
+// Field-anchored endpoints for a logical-mode edge. L/R side per endpoint by relative
+// node-center X (like the reference fieldAnchor); the anchored column resolves to its
+// row world-Y, else the header band center.
+function logicalAnchors(edge, fromPos, toPos, fromT, toT) {
+  const sideFrom = (fromPos.x + LOG_W / 2) <= (toPos.x + LOG_W / 2) ? 'right' : 'left';
+  const sideTo   = sideFrom === 'right' ? 'left' : 'right';
+  const endY = (pos, t, name) => pos.y + (name != null ? logicalRowCY(t, name) : LOG_HEADER / 2);
+  const fName = anchorColName(edge, edge.from, fromT);
+  const tName = anchorColName(edge, edge.to, toT);
+  return {
+    from: { x: sideFrom === 'right' ? fromPos.x + LOG_W : fromPos.x, y: endY(fromPos, fromT, fName), side: sideFrom },
+    to:   { x: sideTo   === 'right' ? toPos.x   + LOG_W : toPos.x,   y: endY(toPos,   toT,   tName), side: sideTo   },
+  };
+}
+
+function updateModeToggleUI() {
+  const c = document.getElementById('mode-conceptual');
+  const l = document.getElementById('mode-logical');
+  if (c) c.classList.toggle('on', viewMode === 'conceptual');
+  if (l) l.classList.toggle('on', viewMode === 'logical');
+}
+
+// Toggle between conceptual and logical. Loads/computes the per-mode layout, redraws,
+// and re-fits. Mode itself is persisted (survives ↻ Data / Reset).
+function switchViewMode(m) {
+  if (m === viewMode) return;
+  viewMode = m;
+  try { localStorage.setItem('flatbase.viewmode', m); } catch {}
+  updateModeToggleUI();
+  applyLayout();
+  render();
+  fitView();
 }
 
 // --- Proposal arbitration (Sub-spec 2) ---
@@ -674,16 +841,20 @@ function computePositions() {
   // Highest-degree connected node → pinned hub at the origin.
   const center = conn.reduce((a, b) => (deg[b] > deg[a] ? b : a), conn[0] || ids[0]);
 
+  // Logical tables are much bigger than conceptual boxes → spread the sim wider so
+  // the tall nodes don't pile up. SP=1 in conceptual (× 1.0 is exact → byte-identical).
+  const SP = viewMode === 'logical' ? 1.7 : 1;
+
   const pos = {};
   conn.forEach(id => {
-    const a = layoutRng() * 6.2832, r = 110 + layoutRng() * 420;
+    const a = layoutRng() * 6.2832, r = (110 + layoutRng() * 420) * SP;
     pos[id] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
   });
   if (center) pos[center] = { x: 0, y: 0 };
 
-  const K = 190;                 // ideal edge length ≈ node width
+  const K = 190 * SP;            // ideal edge length ≈ node width
   const ITER = 420, G = 0.14;    // iterations, center-gravity pull
-  let temp = 420;                // annealing temperature (× 0.975 / iter)
+  let temp = 420 * SP;           // annealing temperature (× 0.975 / iter)
 
   for (let it = 0; it < ITER; it++) {
     const dsp = {}; conn.forEach(id => { dsp[id] = { x: 0, y: 0 }; });
@@ -722,9 +893,13 @@ function computePositions() {
   }
 
   positions = pos;
-  resolveOverlaps(conn, 30, 26, 320);
-  packComponents(conn, adj);
-  parkIsolated(conn, iso);
+  // Precompute per-node dims once — nodeHeight re-derives logicalRows, which is far
+  // too costly inside the O(n²·420) overlap loop. Same values, just cached.
+  const dim = {};
+  for (const id of ids) dim[id] = { w: nodeWidth(TBY[id]), h: nodeHeight(TBY[id]) };
+  resolveOverlaps(conn, 30, 26, 320, dim);
+  packComponents(conn, adj, dim);
+  parkIsolated(conn, iso, dim);
   // The hub is pinned at origin during the FR pass, but the post-passes
   // (overlap resolution / component packing) can nudge it. Translate the whole
   // layout so the hub lands exactly at {0,0} — Fit handles screen placement, so
@@ -736,13 +911,16 @@ function computePositions() {
 }
 
 // Nudge apart any pair of boxes still overlapping after the force pass.
-function resolveOverlaps(nodes, mxg, myg, iters) {
-  const mw = NODE_W + mxg, mh = NODE_H + myg;
+function resolveOverlaps(nodes, mxg, myg, iters, dim) {
+  const mw = nodeWidth() + mxg;
   for (let t = 0; t < iters; t++) {
     let moved = false;
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const A = positions[nodes[i]], B = positions[nodes[j]];
+        // Per-pair required vertical gap: logical nodes vary a lot in height.
+        // Conceptual → (72+72)/2 = 72 → byte-identical to the old NODE_H + myg.
+        const mh = (dim[nodes[i]].h + dim[nodes[j]].h) / 2 + myg;
         const dx = A.x - B.x, dy = A.y - B.y;
         const ox = mw - Math.abs(dx), oy = mh - Math.abs(dy);
         if (ox > 0 && oy > 0) {
@@ -759,7 +937,7 @@ function resolveOverlaps(nodes, mxg, myg, iters) {
 // Shelf-tile disconnected components so they don't blow up the extent.
 // No-op for a single connected component (the common case) — the force
 // result (centered at origin) is then left untouched.
-function packComponents(conn, adj) {
+function packComponents(conn, adj, dim) {
   if (conn.length < 2) return;
   const seen = new Set(), comps = [];
   conn.forEach(s => {
@@ -769,10 +947,10 @@ function packComponents(conn, adj) {
     comps.push(c);
   });
   if (comps.length < 2) return;
-  const GAP = 80, W = NODE_W, H = NODE_H;
+  const GAP = 80, W = nodeWidth();
   const boxes = comps.map(c => {
     let xn = 1e9, xx = -1e9, yn = 1e9, yx = -1e9;
-    c.forEach(id => { const p = positions[id]; xn = Math.min(xn, p.x); xx = Math.max(xx, p.x + W); yn = Math.min(yn, p.y); yx = Math.max(yx, p.y + H); });
+    c.forEach(id => { const p = positions[id], H = dim[id].h; xn = Math.min(xn, p.x); xx = Math.max(xx, p.x + W); yn = Math.min(yn, p.y); yx = Math.max(yx, p.y + H); });
     return { c, xn, yn, w: xx - xn, h: yx - yn, area: (xx - xn) * (yx - yn) };
   });
   boxes.sort((a, b) => b.area - a.area);
@@ -788,25 +966,29 @@ function packComponents(conn, adj) {
 
 // Drop isolated (no-relation) nodes into empty pockets inside the connected
 // cluster's bounding box, falling back to a grid below it.
-function parkIsolated(conn, iso) {
+function parkIsolated(conn, iso, dim) {
   if (!iso.length) return;
-  const W = NODE_W, H = NODE_H, GX = 30, GY = 26, STEP = 24;
+  const W = nodeWidth(), GX = 30, GY = 26, STEP = 24;
+  // Fallback grid row pitch: conceptual keeps the historical NODE_H + 30; logical
+  // uses a taller pitch since the nodes are much taller.
+  const GRID_PITCH = viewMode === 'logical' ? 200 : (NODE_H + 30);
   if (!conn.length) {
     const gx = W + 40;
-    iso.forEach((id, i) => { positions[id] = { x: (i % 3) * gx, y: Math.floor(i / 3) * (H + 30) }; });
+    iso.forEach((id, i) => { positions[id] = { x: (i % 3) * gx, y: Math.floor(i / 3) * GRID_PITCH }; });
     return;
   }
   let bxn = 1e9, bxx = -1e9, byn = 1e9, byx = -1e9;
-  conn.forEach(id => { const p = positions[id]; bxn = Math.min(bxn, p.x); bxx = Math.max(bxx, p.x + W); byn = Math.min(byn, p.y); byx = Math.max(byx, p.y + H); });
+  conn.forEach(id => { const p = positions[id], H = dim[id].h; bxn = Math.min(bxn, p.x); bxx = Math.max(bxx, p.x + W); byn = Math.min(byn, p.y); byx = Math.max(byx, p.y + H); });
   const placed = conn.slice();
-  const freeAt = (x, y) => placed.every(id => { const p = positions[id]; return !(x < p.x + W + GX && p.x < x + W + GX && y < p.y + H + GY && p.y < y + H + GY); });
+  const freeAt = (x, y, h) => placed.every(id => { const p = positions[id], ph = dim[id].h; return !(x < p.x + W + GX && p.x < x + W + GX && y < p.y + ph + GY && p.y < y + h + GY); });
   let fb = 0;
   iso.forEach(id => {
+    const H = dim[id].h;
     let best = null;
     for (let y = byn; y <= byx - H && !best; y += STEP) {
-      for (let x = bxn; x <= bxx - W; x += STEP) { if (freeAt(x, y)) { best = { x, y }; break; } }
+      for (let x = bxn; x <= bxx - W; x += STEP) { if (freeAt(x, y, H)) { best = { x, y }; break; } }
     }
-    if (!best) { best = { x: bxn + (fb % 3) * (W + 40), y: byx + 60 + Math.floor(fb / 3) * (H + 30) }; fb++; }
+    if (!best) { best = { x: bxn + (fb % 3) * (W + 40), y: byx + 60 + Math.floor(fb / 3) * GRID_PITCH }; fb++; }
     positions[id] = { x: best.x, y: best.y }; placed.push(id);
   });
 }
@@ -817,7 +999,10 @@ function layoutKey() {
   const sig = DATA.tables.map(t => t.id).sort().join(',');
   let h = 0;
   for (let i = 0; i < sig.length; i++) h = (Math.imul(h, 31) + sig.charCodeAt(i)) | 0;
-  return 'flatbase.layout.' + proj + '.' + (h >>> 0).toString(36);
+  const base = 'flatbase.layout.' + proj + '.' + (h >>> 0).toString(36);
+  // Conceptual keeps the bare key (pre-existing persisted layouts must still load);
+  // logical gets a suffix so the two modes persist independent arrangements.
+  return viewMode === 'logical' ? base + '.logical' : base;
 }
 function loadPositions() {
   try {
@@ -843,30 +1028,35 @@ function applyLayout() {
   saveLayout();
 }
 
-function computeAnchors(fromPos, toPos) {
-  const fcx = fromPos.x + NODE_W / 2;
-  const fcy = fromPos.y + NODE_H / 2;
-  const tcx = toPos.x   + NODE_W / 2;
-  const tcy = toPos.y   + NODE_H / 2;
+// Anchor points on the box borders. Widths/heights are per-node (logical boxes are
+// tall) — anchors sit at each box's border, at the box's vertical/horizontal center.
+// P2 replaces the logical branch with field-anchored (per-row) endpoints.
+function computeAnchors(fromPos, toPos, fromT, toT) {
+  const fw = nodeWidth(fromT), fh = nodeHeight(fromT);
+  const tw = nodeWidth(toT),   th = nodeHeight(toT);
+  const fcx = fromPos.x + fw / 2;
+  const fcy = fromPos.y + fh / 2;
+  const tcx = toPos.x   + tw / 2;
+  const tcy = toPos.y   + th / 2;
   const dx = tcx - fcx;
   const dy = tcy - fcy;
 
   let fromAnchor, toAnchor;
   if (Math.abs(dx) >= Math.abs(dy)) {
     if (dx >= 0) {
-      fromAnchor = { x: fromPos.x + NODE_W, y: fcy, side: 'right' };
-      toAnchor   = { x: toPos.x,            y: tcy, side: 'left'  };
+      fromAnchor = { x: fromPos.x + fw, y: fcy, side: 'right' };
+      toAnchor   = { x: toPos.x,        y: tcy, side: 'left'  };
     } else {
-      fromAnchor = { x: fromPos.x,          y: fcy, side: 'left'  };
-      toAnchor   = { x: toPos.x + NODE_W,   y: tcy, side: 'right' };
+      fromAnchor = { x: fromPos.x,      y: fcy, side: 'left'  };
+      toAnchor   = { x: toPos.x + tw,   y: tcy, side: 'right' };
     }
   } else {
     if (dy >= 0) {
-      fromAnchor = { x: fcx, y: fromPos.y + NODE_H, side: 'bottom' };
-      toAnchor   = { x: tcx, y: toPos.y,            side: 'top'    };
+      fromAnchor = { x: fcx, y: fromPos.y + fh, side: 'bottom' };
+      toAnchor   = { x: tcx, y: toPos.y,        side: 'top'    };
     } else {
-      fromAnchor = { x: fcx, y: fromPos.y,          side: 'top'    };
-      toAnchor   = { x: tcx, y: toPos.y + NODE_H,   side: 'bottom' };
+      fromAnchor = { x: fcx, y: fromPos.y,      side: 'top'    };
+      toAnchor   = { x: tcx, y: toPos.y + th,   side: 'bottom' };
     }
   }
   return { from: fromAnchor, to: toAnchor };
@@ -875,6 +1065,7 @@ function computeAnchors(fromPos, toPos) {
 function renderNodes() {
   const layer = document.getElementById('node-layer');
   layer.textContent = '';
+  nodeRowEls = {};                 // rebuilt below for logical mode (empty in conceptual)
 
   for (const t of DATA.tables) {
     const pos = positions[t.id];
@@ -890,6 +1081,7 @@ function renderNodes() {
     // top-left (0,0), so drag (later package) is a transform-only update.
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.classList.add('node');
+    if (viewMode === 'logical') g.classList.add('logical');
     if (isHidden) g.classList.add('hidden');
     if (isHighlighted) g.classList.add('highlighted');
     if (isArbIgnored) g.classList.add('arb-ignored');
@@ -902,81 +1094,8 @@ function renderNodes() {
       g.appendChild(title);
     }
 
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', 0);
-    rect.setAttribute('y', 0);
-    rect.setAttribute('width', NODE_W);
-    rect.setAttribute('height', NODE_H);
-    rect.setAttribute('rx', 6);
-    rect.setAttribute('fill', color + '22');
-    rect.setAttribute('stroke', color);
-    rect.setAttribute('stroke-width', isHighlighted ? 3 : 1.5);
-    if (!t.modeled) rect.setAttribute('stroke-dasharray', '5,3');
-    if (t.proposed) {
-      rect.setAttribute('stroke', '#8b5cf6');          // violet, overrides domain color
-      rect.setAttribute('stroke-dasharray', '5,3');
-    }
-    g.appendChild(rect);
-
-    const textEN = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    textEN.setAttribute('x', 10);
-    textEN.setAttribute('y', 20);
-    textEN.setAttribute('font-size', '12');
-    textEN.setAttribute('font-weight', '700');
-    textEN.setAttribute('fill', '#1a1a2e');
-    textEN.textContent = t.name;
-    g.appendChild(textEN);
-
-    const textJA = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    textJA.setAttribute('x', 10);
-    textJA.setAttribute('y', 36);
-    textJA.setAttribute('font-size', '10');
-    textJA.setAttribute('fill', '#666');
-    textJA.textContent = t.name_ja;
-    g.appendChild(textJA);
-
-    const badgeRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    badgeRect.setAttribute('x', 10);
-    badgeRect.setAttribute('y', 46);
-    badgeRect.setAttribute('width', 70);
-    badgeRect.setAttribute('height', 16);
-    badgeRect.setAttribute('rx', 3);
-    badgeRect.setAttribute('fill', color + '44');
-    g.appendChild(badgeRect);
-
-    const badgeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    badgeText.setAttribute('x', 45);
-    badgeText.setAttribute('y', 58);
-    badgeText.setAttribute('font-size', '9');
-    badgeText.setAttribute('font-weight', '600');
-    badgeText.setAttribute('text-anchor', 'middle');
-    badgeText.setAttribute('fill', color);
-    badgeText.textContent = t.type;
-    g.appendChild(badgeText);
-
-    const nodeTags = tableTags(t);
-    if (nodeTags.length && !t.proposed) {
-      const tg = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      tg.setAttribute('x', NODE_W - 8);
-      tg.setAttribute('y', 58);
-      tg.setAttribute('font-size', '9');
-      tg.setAttribute('text-anchor', 'end');
-      tg.setAttribute('fill', '#718096');
-      let label = nodeTags.map(s => '#' + s).join(' ');
-      if (label.length > 18) label = label.slice(0, 17) + '…';
-      tg.textContent = label;
-      g.appendChild(tg);
-    }
-    if (t.proposed) {
-      const pl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      // Right of the type badge (x+10..x+80); tags are skipped on proposed nodes to avoid overlap.
-      pl.setAttribute('x', 86);
-      pl.setAttribute('y', 58);
-      pl.setAttribute('font-size', '9');
-      pl.setAttribute('fill', '#5b21b6');
-      pl.textContent = isArbIgnored ? 'ignored' : 'proposed';
-      g.appendChild(pl);
-    }
+    if (viewMode === 'logical') renderLogicalBody(g, t, color, isHighlighted);
+    else                        renderConceptualBody(g, t, color, isHighlighted, isArbIgnored);
 
     // Left-drag repositions the node; a plain click (no 4px movement) focuses it
     // and opens the detail panel without recentering (the user is already
@@ -994,6 +1113,180 @@ function renderNodes() {
 
     layer.appendChild(g);
   }
+  if (viewMode === 'logical') fitLogicalLabels(layer);
+}
+
+// Conceptual entity box — the original visual (extracted verbatim so conceptual
+// output is byte-identical). Attaches directly to the node group `g`.
+function renderConceptualBody(g, t, color, isHighlighted, isArbIgnored) {
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', 0);
+  rect.setAttribute('y', 0);
+  rect.setAttribute('width', NODE_W);
+  rect.setAttribute('height', NODE_H);
+  rect.setAttribute('rx', 6);
+  rect.setAttribute('fill', color + '22');
+  rect.setAttribute('stroke', color);
+  rect.setAttribute('stroke-width', isHighlighted ? 3 : 1.5);
+  if (!t.modeled) rect.setAttribute('stroke-dasharray', '5,3');
+  if (t.proposed) {
+    rect.setAttribute('stroke', '#8b5cf6');          // violet, overrides domain color
+    rect.setAttribute('stroke-dasharray', '5,3');
+  }
+  g.appendChild(rect);
+
+  const textEN = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  textEN.setAttribute('x', 10);
+  textEN.setAttribute('y', 20);
+  textEN.setAttribute('font-size', '12');
+  textEN.setAttribute('font-weight', '700');
+  textEN.setAttribute('fill', '#1a1a2e');
+  textEN.textContent = t.name;
+  g.appendChild(textEN);
+
+  const textJA = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  textJA.setAttribute('x', 10);
+  textJA.setAttribute('y', 36);
+  textJA.setAttribute('font-size', '10');
+  textJA.setAttribute('fill', '#666');
+  textJA.textContent = t.name_ja;
+  g.appendChild(textJA);
+
+  const badgeRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  badgeRect.setAttribute('x', 10);
+  badgeRect.setAttribute('y', 46);
+  badgeRect.setAttribute('width', 70);
+  badgeRect.setAttribute('height', 16);
+  badgeRect.setAttribute('rx', 3);
+  badgeRect.setAttribute('fill', color + '44');
+  g.appendChild(badgeRect);
+
+  const badgeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  badgeText.setAttribute('x', 45);
+  badgeText.setAttribute('y', 58);
+  badgeText.setAttribute('font-size', '9');
+  badgeText.setAttribute('font-weight', '600');
+  badgeText.setAttribute('text-anchor', 'middle');
+  badgeText.setAttribute('fill', color);
+  badgeText.textContent = t.type;
+  g.appendChild(badgeText);
+
+  const nodeTags = tableTags(t);
+  if (nodeTags.length && !t.proposed) {
+    const tg = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    tg.setAttribute('x', NODE_W - 8);
+    tg.setAttribute('y', 58);
+    tg.setAttribute('font-size', '9');
+    tg.setAttribute('text-anchor', 'end');
+    tg.setAttribute('fill', '#718096');
+    let label = nodeTags.map(s => '#' + s).join(' ');
+    if (label.length > 18) label = label.slice(0, 17) + '…';
+    tg.textContent = label;
+    g.appendChild(tg);
+  }
+  if (t.proposed) {
+    const pl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    // Right of the type badge (x+10..x+80); tags are skipped on proposed nodes to avoid overlap.
+    pl.setAttribute('x', 86);
+    pl.setAttribute('y', 58);
+    pl.setAttribute('font-size', '9');
+    pl.setAttribute('fill', '#5b21b6');
+    pl.textContent = isArbIgnored ? 'ignored' : 'proposed';
+    g.appendChild(pl);
+  }
+}
+
+// Logical table node — a header band (name + small name_ja, domain-tinted) plus one
+// row per column (PK/FK badge + name). Populates nodeRowEls[t.id] so P2 can anchor
+// edges to rows and highlight FK/PK rows under focus. Every column maps to a row Y:
+// its own if visible, else the overflow "… +N" row.
+const NS_SVG = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs) { const e = document.createElementNS(NS_SVG, tag); if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+function renderLogicalBody(g, t, color, isHighlighted) {
+  const h = nodeHeight(t);
+  const { rows, overflow } = logicalRows(t);
+  const rec = nodeRowEls[t.id] = { byName: {}, overflowCy: null };
+
+  // Box
+  const box = svgEl('rect', { x: 0, y: 0, width: LOG_W, height: h, rx: 6,
+    fill: color + '18', stroke: t.proposed ? '#8b5cf6' : color,
+    'stroke-width': isHighlighted ? 3 : 1.5 });
+  if (!t.modeled || t.proposed) box.setAttribute('stroke-dasharray', '5,3');
+  g.appendChild(box);
+
+  // Header band + divider
+  g.appendChild(svgEl('rect', { x: 0, y: 0, width: LOG_W, height: LOG_HEADER, rx: 6, fill: color + '66' }));
+  g.appendChild(svgEl('rect', { x: 0, y: LOG_HEADER - 6, width: LOG_W, height: 6, fill: color + '66' })); // square off header's bottom corners
+  g.appendChild(svgEl('line', { x1: 0, y1: LOG_HEADER, x2: LOG_W, y2: LOG_HEADER, stroke: color, 'stroke-width': 1, opacity: 0.5 }));
+
+  const nameEl = svgEl('text', { x: 9, y: 13, fill: '#1a1a2e', 'font-weight': '700' });
+  nameEl.setAttribute('class', 'lg-name');
+  nameEl.textContent = t.name;
+  g.appendChild(nameEl);
+  if (t.name_ja) {
+    const ja = svgEl('text', { x: 9, y: 24, fill: '#4a5568' });
+    ja.setAttribute('class', 'lg-name-ja');
+    ja.textContent = t.name_ja;
+    g.appendChild(ja);
+  }
+  if (t.proposed) {
+    const pl = svgEl('text', { x: LOG_W - 7, y: 12, 'text-anchor': 'end', fill: '#5b21b6' });
+    pl.setAttribute('class', 'lg-badge');
+    pl.textContent = 'proposed';
+    g.appendChild(pl);
+  }
+
+  // Column rows
+  rows.forEach((r, i) => {
+    const c = r.c, y = LOG_HEADER + i * LOG_ROWH, cy = y + LOG_ROWH / 2;
+    if (i % 2 === 1) g.appendChild(svgEl('rect', { class: 'lg-stripe', x: 1, y, width: LOG_W - 2, height: LOG_ROWH }));
+    const fr = svgEl('rect', { class: 'lg-rowhi', x: 1, y, width: LOG_W - 2, height: LOG_ROWH });
+    g.appendChild(fr);
+    const isPk = !!c.pk, fkT = colFkTarget(c);
+    let badge = null;
+    if (isPk || fkT) {
+      badge = svgEl('text', { x: 9, y: y + 13, fill: isPk ? '#d97706' : '#2563eb' });
+      badge.setAttribute('class', 'lg-badge');
+      badge.textContent = isPk ? 'PK' : 'FK';
+      g.appendChild(badge);
+    }
+    const nm = svgEl('text', { x: 30, y: y + 13 });
+    const cls = ['lg-col'];
+    if (c.proposed) cls.push('proposed');
+    if (c.status === 'inferred') cls.push('inferred');
+    if (c.proposed && colArb(t.id, c.name).ignore) cls.push('ignored');
+    nm.setAttribute('class', cls.join(' '));
+    nm.textContent = c.name || '';
+    g.appendChild(nm);
+    rec.byName[c.name] = { cy, fr, badge, name: nm };
+  });
+
+  // Overflow summary row; capped columns anchor here.
+  if (overflow > 0) {
+    const y = LOG_HEADER + rows.length * LOG_ROWH, cy = y + LOG_ROWH / 2;
+    const ov = svgEl('text', { x: 9, y: y + 13 });
+    ov.setAttribute('class', 'lg-overflow');
+    ov.textContent = '… +' + overflow + ' more';
+    g.appendChild(ov);
+    rec.overflowCy = cy;
+    const shown = new Set(rows.map(r => r.c.name));
+    for (const col of tableColumns(t)) {
+      const nm = colObj(col).name;
+      if (nm != null && !shown.has(nm) && rec.byName[nm] === undefined) rec.byName[nm] = { cy, fr: null, badge: null, name: null };
+    }
+  }
+}
+
+// Squish over-wide logical labels to fit inside the box (textLength clamp).
+function fitLogicalLabels(layer) {
+  const clamp = (el, maxW) => {
+    if (!el || !el.getComputedTextLength) return;
+    const w = el.getComputedTextLength();
+    if (w > maxW && maxW > 0) { el.setAttribute('textLength', maxW); el.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+  };
+  layer.querySelectorAll('text.lg-name').forEach(el => clamp(el, LOG_W - 60));
+  layer.querySelectorAll('text.lg-name-ja').forEach(el => clamp(el, LOG_W - 16));
+  layer.querySelectorAll('text.lg-col').forEach(el => clamp(el, LOG_W - 38));
 }
 
 function setupDefs() {
@@ -1257,9 +1550,18 @@ function edgeGeometry(edge) {
   const CTL = 60;
   if (isSelf) {
     // Self-relation: draw a small loop bulging out to the right of the node.
-    const right = fromPos.x + NODE_W;
-    const yTop = fromPos.y + NODE_H * 0.3;
-    const yBot = fromPos.y + NODE_H * 0.7;
+    const selfT = TBY[edge.from];
+    const right = fromPos.x + nodeWidth(selfT);
+    let yTop, yBot;
+    if (viewMode === 'logical') {
+      // Anchor the loop to the header band so a tall (12-row) node doesn't sprawl.
+      yTop = fromPos.y + LOG_HEADER * 0.5;
+      yBot = fromPos.y + LOG_HEADER * 1.5;
+    } else {
+      const selfH = nodeHeight(selfT);   // conceptual — byte-identical to before
+      yTop = fromPos.y + selfH * 0.3;
+      yBot = fromPos.y + selfH * 0.7;
+    }
     x1 = right; y1 = yTop;
     x2 = right; y2 = yBot;
     const LOOP_OUT = 70;
@@ -1268,7 +1570,10 @@ function edgeGeometry(edge) {
     cx2 = right + LOOP_OUT; cy2 = yBot + LOOP_FLARE;
     fromSide = 'right'; toSide = 'right';
   } else {
-    const { from: a, to: b } = computeAnchors(fromPos, toPos);
+    const a_b = viewMode === 'logical'
+      ? logicalAnchors(edge, fromPos, toPos, TBY[edge.from], TBY[edge.to])
+      : computeAnchors(fromPos, toPos, TBY[edge.from], TBY[edge.to]);
+    const a = a_b.from, b = a_b.to;
     x1 = a.x; y1 = a.y;
     x2 = b.x; y2 = b.y;
     fromSide = a.side; toSide = b.side;
@@ -1983,9 +2288,7 @@ function resetState() {
   hiddenNodes.clear();
   cascadeHiddenNodes.clear();
   hiddenDomains.clear();
-  proposedFilter = 'all';
-  const filterEl = document.getElementById('proposed-filter');
-  if (filterEl) filterEl.value = 'all';
+  proposedFilter = 'all';        // always 'all' — the Show filter UI was removed
   sidebarSearch = '';
   const searchEl = document.getElementById('sidebar-search');
   if (searchEl) searchEl.value = '';
@@ -2391,21 +2694,26 @@ function buildFrozenHTML(data) {
 <header id="header">
   <span class="app-title">flatbase <small>v0.5</small></span>
   <div id="domain-filters"></div>
-  <select id="proposed-filter" title="Filter by proposed/defined">
-    <option value="all">Show: All</option>
-    <option value="proposed">Proposed only</option>
-    <option value="defined">Defined only</option>
-  </select>
-  <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
-  <button id="reset-btn">Reset</button>
-  <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
-  <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
-  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+  <button id="zoom-out-btn" title="Zoom out">−</button>
+  <button id="zoom-in-btn" title="Zoom in">+</button>
+  <div id="menu-wrap">
+    <button id="menu-btn" title="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
+    <div id="menu-panel" class="hidden">
+      <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+      <button id="reset-btn">Reset</button>
+      <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
+      <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+    </div>
+  </div>
 </header>
 
 <div id="main">
   <nav id="sidebar">
     <div id="sidebar-tools">
+      <div id="mode-toggle" title="Conceptual = entity boxes · Logical = column rows">
+        <button id="mode-conceptual" class="on" data-mode="conceptual">Conceptual</button>
+        <button id="mode-logical" data-mode="logical">Logical</button>
+      </div>
       <input id="sidebar-search" type="search" placeholder="Search tables…" autocomplete="off">
       <div id="sidebar-count"></div>
     </div>
@@ -2482,7 +2790,16 @@ function clearCachedData() {
   // a data reset discards them too, so a new proposal with the same
   // meta.project never inherits stale decisions or node positions.
   try { if (DATA) localStorage.removeItem(arbKey()); } catch {}
-  try { if (DATA) localStorage.removeItem(layoutKey()); } catch {}
+  // Clear BOTH per-mode layout keys (viewMode itself is a viewing preference and is
+  // deliberately NOT cleared here).
+  try {
+    if (DATA) {
+      const savedMode = viewMode;
+      viewMode = 'conceptual'; localStorage.removeItem(layoutKey());
+      viewMode = 'logical';    localStorage.removeItem(layoutKey());
+      viewMode = savedMode;
+    }
+  } catch {}
   location.reload();
 }
 
@@ -2507,7 +2824,7 @@ function visibleBBox() {
     const p = positions[t.id];
     if (!p) continue;
     a = Math.min(a, p.x); b = Math.min(b, p.y);
-    c = Math.max(c, p.x + NODE_W); d = Math.max(d, p.y + NODE_H);
+    c = Math.max(c, p.x + nodeWidth(t)); d = Math.max(d, p.y + nodeHeight(t));
   }
   if (!isFinite(a)) return null;
   return { a, b, c, d };
@@ -2533,10 +2850,27 @@ function centerViewportOnNode(id) {
   const p = positions[id];
   if (!p) return;
   const s = document.getElementById('diagram').getBoundingClientRect();
-  const wx = p.x + NODE_W / 2, wy = p.y + NODE_H / 2;
+  const t = TBY[id];
+  const wx = p.x + nodeWidth(t) / 2, wy = p.y + nodeHeight(t) / 2;
   panX = s.width / 2 - wx * zoomK;
   panY = s.height / 2 - wy * zoomK;
   applyViewport();
+}
+
+// Zoom by `factor` about the container-space point (mx,my), keeping that point
+// fixed under the cursor. Clamped to the same 0.12–3 range everywhere.
+function zoomAt(mx, my, factor) {
+  const wx = (mx - panX) / zoomK, wy = (my - panY) / zoomK;
+  zoomK = Math.max(0.12, Math.min(3, zoomK * factor));
+  panX = mx - wx * zoomK; panY = my - wy * zoomK;
+  applyViewport();
+}
+
+// Manual zoom step — anchored on the CENTER of the visible diagram area
+// (not the cursor). Used by the − / + header buttons and the +/- keys.
+function zoomStep(factor) {
+  const s = document.getElementById('diagram').getBoundingClientRect();
+  zoomAt(s.width / 2, s.height / 2, factor);
 }
 
 function isPanGesture(ev) { return spaceDown || ev.button === 2; }
@@ -2612,6 +2946,7 @@ function applyFocus() {
     document.body.classList.remove('focusing');
     nodeEls.forEach(g => g.classList.remove('dim', 'hi'));
     edgeEls.forEach(g => g.classList.remove('dim', 'hi'));
+    clearRowHi();
     return;
   }
   document.body.classList.add('focusing');
@@ -2635,6 +2970,42 @@ function applyFocus() {
     g.classList.toggle('hi', keep);
     g.classList.toggle('dim', !keep);
   });
+  // Logical mode: light the FK/PK rows the kept (visible) edges anchor to. Same
+  // anchorColName resolver as the geometry, so the highlighted rows are exactly the
+  // anchored rows. No-op in conceptual (nodeRowEls is {}).
+  clearRowHi();
+  if (viewMode === 'logical') {
+    edgeEls.forEach(g => {
+      if (!keepEdge(g) || g.classList.contains('hidden') || !g.__edge) return;
+      const e = g.__edge;
+      addRowHi(e.from, anchorColName(e, e.from, TBY[e.from]));
+      addRowHi(e.to, anchorColName(e, e.to, TBY[e.to]));
+    });
+  }
+}
+
+// Focus row highlight (logical): amber background rect + bold column name. Uses the
+// live DOM refs in nodeRowEls (populated by renderNodes). A capped column resolves to
+// the overflow row, which has no dedicated refs — its geometric anchor still lands
+// there, but there is nothing to bold, so addRowHi is a safe no-op for it.
+function addRowHi(tid, colName) {
+  if (!colName) return;
+  const rec = nodeRowEls[tid];
+  if (!rec) return;
+  const r = rec.byName[colName];
+  if (!r) return;
+  if (r.fr) r.fr.classList.add('row-hi');
+  if (r.name) r.name.classList.add('row-hi');
+}
+function clearRowHi() {
+  for (const tid in nodeRowEls) {
+    const rec = nodeRowEls[tid];
+    for (const nm in rec.byName) {
+      const r = rec.byName[nm];
+      if (r.fr) r.fr.classList.remove('row-hi');
+      if (r.name) r.name.classList.remove('row-hi');
+    }
+  }
 }
 
 function focusNode(id) {
@@ -2661,11 +3032,14 @@ function onWheel(ev) {
   const s = svg.getBoundingClientRect();
   if (ev.ctrlKey || ev.metaKey) {                    // ctrl/⌘ + wheel → zoom at cursor
     const mx = ev.clientX - s.left, my = ev.clientY - s.top;
-    const wx = (mx - panX) / zoomK, wy = (my - panY) / zoomK;
-    const f = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
-    zoomK = Math.max(0.12, Math.min(3, zoomK * f));
-    panX = mx - wx * zoomK; panY = my - wy * zoomK;
-    applyViewport();
+    // Delta-PROPORTIONAL zoom: scale exponentially by the actual delta magnitude
+    // so a gesture that fires many small events (trackpad pinch, high-res wheels)
+    // does not compound a fixed per-event factor into a zoom explosion. deltaMode
+    // is normalized to pixels the same way the pan path below does. S is tuned so
+    // a mouse notch (deltaY≈100) ≈ +15%/step and a full pinch spans ≈ 2–4×.
+    const u = ev.deltaMode === 1 ? 16 : (ev.deltaMode === 2 ? s.height : 1);
+    const S = 0.0014;
+    zoomAt(mx, my, Math.exp(-ev.deltaY * u * S));
     return;
   }
   // deltaMode: 0=pixels, 1=lines, 2=pages → normalize to pixels.
@@ -2730,11 +3104,13 @@ function initViewport() {
     clearFocus();
   });
 
-  // Space = hand tool, but never when typing in the sidebar search.
+  // Space = hand tool; +/- = zoom step. Never while typing in an input.
   window.addEventListener('keydown', ev => {
-    if (ev.code !== 'Space') return;
     const el = document.activeElement;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
+    if (ev.key === '+' || ev.key === '=') { zoomStep(1.25); ev.preventDefault(); return; }
+    if (ev.key === '-' || ev.key === '_') { zoomStep(0.8); ev.preventDefault(); return; }
+    if (ev.code !== 'Space') return;
     if (!spaceDown) { spaceDown = true; svg.classList.add('grab'); }
     ev.preventDefault();
   });
@@ -2757,6 +3133,8 @@ async function init() {
   DATA = await loadData();
   DOMAIN_ORDER = DATA.domains.map(d => d.id);
   DOMAIN_COLORS = Object.fromEntries(DATA.domains.map(d => [d.id, d.color]));
+  TBY = Object.fromEntries(DATA.tables.map(t => [t.id, t]));  // id → table (layout/geometry helpers)
+  updateModeToggleUI();                                        // sync toggle to the persisted viewMode
 
   // Arbitration decisions must be loaded before the first paint (proposed nodes
   // render their ignored/overruled state from them). Layout doesn't depend on it.
@@ -2773,16 +3151,16 @@ async function init() {
   fitView();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
-  document.getElementById('fit-btn').addEventListener('click', fitView);
+  document.getElementById('mode-conceptual').addEventListener('click', () => switchViewMode('conceptual'));
+  document.getElementById('mode-logical').addEventListener('click', () => switchViewMode('logical'));
+  document.getElementById('zoom-in-btn').addEventListener('click', () => zoomStep(1.25));
+  document.getElementById('zoom-out-btn').addEventListener('click', () => zoomStep(0.8));
   document.getElementById('sidebar-search').addEventListener('input', (e) => {
     sidebarSearch = e.target.value.trim().toLowerCase();
     renderSidebar();               // sidebar-only filter — the diagram is untouched
   });
-  document.getElementById('proposed-filter').addEventListener('change', (e) => {
-    proposedFilter = e.target.value;
-    render();
-  });
   document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
+  initMenu();
   document.getElementById('export-proposal-btn').addEventListener('click', exportProposal);
   const reloadBtn = document.getElementById('reload-data-btn');
   if (window.__BAKED_DATA__) {
@@ -2793,10 +3171,35 @@ async function init() {
   document.getElementById('detail-close').addEventListener('click', closeDetailPanel);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    // Hamburger takes Escape priority: an open menu closes first and swallows the
+    // key, so focus/panel state is untouched. Only a closed menu falls through.
+    if (menuOpen) { setMenuOpen(false); return; }
     // Escape clears focus; if a panel is open it closes it too (closeDetailPanel
     // also clears focus). Both-at-once is intended.
     if (openPanelId) closeDetailPanel();
     else clearFocus();
+  });
+}
+
+// ---- hamburger menu (☰) ----
+// A simple click-to-toggle dropdown holding Export / Reset / ↻ Data / ↓ Proposal.
+// Click-outside and Escape close it; Escape priority is handled in init()'s keydown.
+let menuOpen = false;
+function setMenuOpen(open) {
+  menuOpen = open;
+  document.getElementById('menu-panel').classList.toggle('hidden', !open);
+  document.getElementById('menu-btn').setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function initMenu() {
+  const btn = document.getElementById('menu-btn');
+  const panel = document.getElementById('menu-panel');
+  btn.addEventListener('click', (e) => { e.stopPropagation(); setMenuOpen(!menuOpen); });
+  // Any action inside the panel closes the menu (after its own handler runs).
+  panel.addEventListener('click', () => setMenuOpen(false));
+  // Click anywhere outside the menu closes it — without swallowing the click, so a
+  // background click still reaches the SVG's clearFocus handler.
+  document.addEventListener('click', (e) => {
+    if (menuOpen && !document.getElementById('menu-wrap').contains(e.target)) setMenuOpen(false);
   });
 }
 

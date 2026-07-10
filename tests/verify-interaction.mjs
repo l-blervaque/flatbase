@@ -102,6 +102,7 @@ ok('saved layout applied on reload', honored);
 
 // --- 4. ↻ Data clears the layout key (clearCachedData removes it before its location.reload).
 const hadKey = await page.evaluate(k => !!localStorage.getItem(k), layoutKey);
+await page.click('#menu-btn');            // ↻ Data now lives inside the hamburger menu
 await page.click('#reload-data-btn');
 const gone = await page.evaluate(k => !localStorage.getItem(k), layoutKey);
 ok('↻ Data removes the layout key', hadKey && gone, `hadKey=${hadKey} gone=${gone}`);
@@ -128,9 +129,9 @@ const zoomChanged = /scale\(([-\d.]+)\)/.exec(tZoom);
 ok('ctrl+wheel zooms the viewport', tZoom !== tPan && zoomChanged && Math.abs(+zoomChanged[1] - 1) > 1e-6, tZoom);
 
 // --- 6. Fit normalizes the transform (finite + idempotent).
-await page.click('#fit-btn');
+await page.evaluate(() => fitView());
 const tFit1 = await vpTransform(page);
-await page.click('#fit-btn');
+await page.evaluate(() => fitView());
 const tFit2 = await vpTransform(page);
 const finite = /translate\(([-\d.]+),([-\d.]+)\) scale\(([-\d.]+)\)/.exec(tFit1);
 ok('Fit produces a finite framed transform', !!finite && finite.slice(1).every(v => isFinite(+v)), tFit1);
@@ -147,7 +148,7 @@ ok('sidebar click does NOT scroll the container', scrollBefore.l === scrollAfter
 
 // --- 8. Hand tool: right-button drag pans; the following node click still opens the panel.
 await page.click('#detail-close').catch(() => {});
-await page.click('#fit-btn');
+await page.evaluate(() => fitView());
 const tHandBefore = await vpTransform(page);
 const box = await page.evaluate(() => { const s = document.getElementById('diagram').getBoundingClientRect(); return { x: s.left + s.width / 2, y: s.top + s.height / 2 }; });
 await page.mouse.move(box.x, box.y);
@@ -161,6 +162,103 @@ ok('right-drag pans the viewport', tHandAfter !== tHandBefore, `${tHandBefore} -
 await page.click('#node-layer .node');
 const panelOpen = await page.evaluate(() => !document.getElementById('detail-panel').classList.contains('closed'));
 ok('node click after right-drag opens the panel', panelOpen, `panelOpen=${panelOpen}`);
+
+// --- 9. Delta-PROPORTIONAL zoom: a burst of many small ctrl+wheel events (as a
+// trackpad pinch fires) must NOT explode — total change stays smooth & bounded.
+await page.evaluate(() => fitView());
+const zBurst0 = await page.evaluate(() => zoomK);
+await page.evaluate(() => {
+  const svg = document.getElementById('diagram');
+  const s = svg.getBoundingClientRect();
+  for (let i = 0; i < 30; i++) {
+    svg.dispatchEvent(new WheelEvent('wheel', { deltaY: -5, ctrlKey: true, clientX: s.left + s.width / 2, clientY: s.top + s.height / 2, cancelable: true, bubbles: true }));
+  }
+});
+const zBurst1 = await page.evaluate(() => zoomK);
+const burstRatio = zBurst1 / zBurst0;
+ok('30× small ctrl+wheel (deltaY -5) zooms smoothly, not exploded', burstRatio > 1 && burstRatio < 1.6, `ratio=${burstRatio.toFixed(3)}`);
+
+// --- 10. A single mouse notch (deltaY -100, pixel mode) = a pleasant ~1.1–1.2× step.
+await page.evaluate(() => fitView());
+const zNotch0 = await page.evaluate(() => zoomK);
+await page.evaluate(() => {
+  const svg = document.getElementById('diagram');
+  const s = svg.getBoundingClientRect();
+  svg.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, ctrlKey: true, clientX: s.left + s.width / 2, clientY: s.top + s.height / 2, cancelable: true, bubbles: true }));
+});
+const zNotch1 = await page.evaluate(() => zoomK);
+const notchRatio = zNotch1 / zNotch0;
+ok('mouse notch (deltaY -100) gives ~1.1–1.2× step', notchRatio >= 1.10 && notchRatio <= 1.20, `ratio=${notchRatio.toFixed(3)}`);
+
+// --- 11. Manual − / + buttons step zoom by ~0.8× / 1.25×, within the clamp.
+await page.evaluate(() => fitView());
+const hasZoomBtns = await page.evaluate(() => !!document.getElementById('zoom-in-btn') && !!document.getElementById('zoom-out-btn'));
+ok('zoom − / + buttons exist', hasZoomBtns);
+const zIn0 = await page.evaluate(() => zoomK);
+await page.click('#zoom-in-btn');
+const zIn1 = await page.evaluate(() => zoomK);
+ok('+ button zooms in by ~1.25×', Math.abs(zIn1 / zIn0 - 1.25) < 1e-3 || (zIn1 === 3 && zIn0 * 1.25 >= 3), `ratio=${(zIn1 / zIn0).toFixed(3)}`);
+await page.click('#zoom-out-btn');
+const zOut1 = await page.evaluate(() => zoomK);
+ok('− button zooms out by ~0.8×', Math.abs(zOut1 / zIn1 - 0.8) < 1e-3 || (zOut1 === 0.12 && zIn1 * 0.8 <= 0.12), `ratio=${(zOut1 / zIn1).toFixed(3)}`);
+ok('zoom stays within the 0.12–3 clamp', zOut1 >= 0.12 && zOut1 <= 3 && zIn1 >= 0.12 && zIn1 <= 3, `in=${zIn1} out=${zOut1}`);
+
+// --- 12. Frozen export carries working zoom buttons.
+const frozenHTML = await page.evaluate(() => buildFrozenHTML(RAW_INPUT));
+const frozenPath = path.join(OUT, 'frozen-interaction.html');
+fs.writeFileSync(frozenPath, frozenHTML);
+const fpage = await ctx.newPage();
+await fpage.goto('file://' + frozenPath);
+await fpage.waitForSelector('.node', { timeout: 5000 });
+const fHas = await fpage.evaluate(() => !!document.getElementById('zoom-in-btn') && !!document.getElementById('zoom-out-btn'));
+ok('frozen export has zoom − / + buttons', fHas);
+await fpage.evaluate(() => fitView());
+const fz0 = await fpage.evaluate(() => zoomK);
+await fpage.click('#zoom-in-btn');
+const fz1 = await fpage.evaluate(() => zoomK);
+ok('frozen export zoom buttons work', fz1 > fz0 && fz1 <= 3, `${fz0} -> ${fz1}`);
+
+// Frozen export's hamburger: opens, holds Export + Reset, HIDES ↻ Data (no reload in frozen).
+const fMenuHidden0 = await fpage.evaluate(() => document.getElementById('menu-panel').classList.contains('hidden'));
+await fpage.click('#menu-btn');
+const fMenu = await fpage.evaluate(() => ({
+  open: !document.getElementById('menu-panel').classList.contains('hidden'),
+  hasExport: !!document.getElementById('export-btn'),
+  hasReset: !!document.getElementById('reset-btn'),
+  dataHidden: document.getElementById('reload-data-btn').style.display === 'none',
+}));
+ok('frozen hamburger opens with Export + Reset, ↻ Data hidden',
+  fMenuHidden0 === true && fMenu.open && fMenu.hasExport && fMenu.hasReset && fMenu.dataHidden, JSON.stringify(fMenu));
+
+// --- 13. Atelier hamburger menu: open/close by click, click-outside, Escape; Reset via menu resets.
+const mClosed0 = await page.evaluate(() => document.getElementById('menu-panel').classList.contains('hidden'));
+await page.click('#menu-btn');
+const mOpen = await page.evaluate(() => ({
+  open: !document.getElementById('menu-panel').classList.contains('hidden'),
+  hasExport: !!document.getElementById('export-btn'),
+  hasReset: !!document.getElementById('reset-btn'),
+  hasData: getComputedStyle(document.getElementById('reload-data-btn')).display !== 'none',
+  proposalHidden: document.getElementById('export-proposal-btn').style.display === 'none',
+}));
+ok('hamburger opens on click', mClosed0 === true && mOpen.open, JSON.stringify(mOpen));
+ok('menu holds Export + Reset + ↻ Data (atelier), ↓ Proposal hidden (no proposal data)',
+  mOpen.hasExport && mOpen.hasReset && mOpen.hasData && mOpen.proposalHidden, JSON.stringify(mOpen));
+// click-outside closes
+await page.mouse.click(5, 5);
+const mAfterOutside = await page.evaluate(() => document.getElementById('menu-panel').classList.contains('hidden'));
+ok('click-outside closes the menu', mAfterOutside === true, `hidden=${mAfterOutside}`);
+// Escape closes (and takes priority — does not clear focus/panel here since none is open)
+await page.click('#menu-btn');
+await page.keyboard.press('Escape');
+const mAfterEsc = await page.evaluate(() => document.getElementById('menu-panel').classList.contains('hidden'));
+ok('Escape closes the menu', mAfterEsc === true, `hidden=${mAfterEsc}`);
+// Reset via menu still resets state (hide a node, then Reset from the menu restores it).
+await page.evaluate(() => { const id = DATA.tables[0].id; toggleNodeVisibility(id); });
+const hiddenCount = await page.evaluate(() => hiddenNodes.size);
+await page.click('#menu-btn');
+await page.click('#reset-btn');
+const afterReset = await page.evaluate(() => ({ hidden: hiddenNodes.size, menuHidden: document.getElementById('menu-panel').classList.contains('hidden') }));
+ok('Reset via menu resets state and closes the menu', hiddenCount === 1 && afterReset.hidden === 0 && afterReset.menuHidden === true, JSON.stringify(afterReset));
 
 await page.screenshot({ path: path.join(OUT, 'interaction-final.png') });
 

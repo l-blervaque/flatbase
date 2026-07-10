@@ -144,7 +144,7 @@ await page.keyboard.press('Escape');
 // ============ RESET clears focus ============
 await clickNodeEl(page, pick.id);
 const beforeReset = await page.evaluate(() => document.body.classList.contains('focusing'));
-await page.click('#reset-btn');
+await page.click('#menu-btn'); await page.click('#reset-btn');
 const afterReset = await page.evaluate(() => ({
   focusing: document.body.classList.contains('focusing'),
   dim: document.querySelectorAll('#node-layer .node.dim').length,
@@ -258,13 +258,25 @@ ok('stale arb (non-proposed column) does NOT suppress the edge', staleEdgeVisibl
 await seed(page, fixture);
 await clickNodeEl(page, 'proposed_tbl');
 const focusedBeforeHide = await page.evaluate(() => document.body.classList.contains('focusing'));
-// proposed filter → 'defined' hides proposed_tbl; render() must drop the now-invisible focus.
-await page.selectOption('#proposed-filter', 'defined');
+// Hiding proposed_tbl (its sidebar eye toggle → toggleNodeVisibility → render) must
+// drop the now-invisible focus. (Formerly driven via the removed Show=defined filter.)
+await page.evaluate(() => toggleNodeVisibility('proposed_tbl'));
 const afterHide = await page.evaluate(() => ({
   focusing: document.body.classList.contains('focusing'),
   dim: document.querySelectorAll('#node-layer .node.dim').length,
 }));
 ok('focusing a node then hiding it clears focus', focusedBeforeHide === true && afterHide.focusing === false && afterHide.dim === 0, JSON.stringify(afterHide));
+
+// ============ HAMBURGER: ↓ Proposal appears in proposal mode ============
+// The proposed-fixture is loaded (from the block above). Open the menu; the ↓ Proposal
+// button must be visible (display cleared), alongside Export/Reset/↻ Data.
+await page.click('#menu-btn');
+const menuProp = await page.evaluate(() => ({
+  open: !document.getElementById('menu-panel').classList.contains('hidden'),
+  proposalShown: document.getElementById('export-proposal-btn').style.display !== 'none',
+  hasExport: !!document.getElementById('export-btn'),
+}));
+ok('proposal-mode hamburger shows ↓ Proposal', menuProp.open && menuProp.proposalShown && menuProp.hasExport, JSON.stringify(menuProp));
 
 await page.screenshot({ path: path.join(OUT, 'drag-focus-final.png') });
 await browser.close();
