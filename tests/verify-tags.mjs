@@ -60,7 +60,7 @@ await page.fill('#sidebar-search', 'mvp');
 const searchHit = await page.evaluate(() =>
   [...document.querySelectorAll('#sidebar-list .sidebar-table .table-name-en')].map(e => e.textContent));
 ok('search "mvp" matches tagged table', searchHit.length === 1 && searchHit[0] === 'Book', JSON.stringify(searchHit));
-await page.click('#reset-btn');
+await page.click('#menu-btn'); await page.click('#reset-btn');
 
 // 6. Detail panel: tag chips, no modeled/planned badge
 await page.evaluate(() => openDetailPanel('book'));
@@ -77,6 +77,7 @@ ok('detail panel shows tag chips, no modeled badge',
 await page.screenshot({ path: path.join(OUT, 'tags.png') });
 
 // 7. Frozen export carries tags
+await page.click('#menu-btn');                 // ↓ Export now lives in the hamburger menu
 const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#export-btn')]);
 const frozenPath = path.join(OUT, 'frozen-tags.html');
 await dl.saveAs(frozenPath);

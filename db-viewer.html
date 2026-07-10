@@ -58,7 +58,7 @@
       border-radius: 3px;
     }
 
-    #reset-btn, #export-btn, #reload-data-btn, #fit-btn, #zoom-out-btn, #zoom-in-btn {
+    #reset-btn, #export-btn, #reload-data-btn, #menu-btn, #zoom-out-btn, #zoom-in-btn {
       background: #313244;
       color: #cdd6f4;
       border: 1px solid #45475a;
@@ -68,18 +68,31 @@
       font-size: 12px;
       white-space: nowrap;
     }
-    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover, #fit-btn:hover, #zoom-out-btn:hover, #zoom-in-btn:hover { background: #45475a; }
+    #reset-btn:hover, #export-btn:hover, #reload-data-btn:hover, #menu-btn:hover, #zoom-out-btn:hover, #zoom-in-btn:hover { background: #45475a; }
     #zoom-out-btn, #zoom-in-btn { min-width: 30px; font-weight: 600; }
+    #menu-btn { min-width: 34px; font-size: 15px; line-height: 1; padding: 4px 9px; }
 
-    /* View-mode segmented toggle (Conceptual | Logical) */
-    #mode-toggle { display: inline-flex; border: 1px solid #45475a; border-radius: 6px; overflow: hidden; }
-    #mode-toggle button {
-      background: #313244; color: #a6adc8; border: 0; border-radius: 0;
-      padding: 4px 11px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    /* Hamburger dropdown — anchored under the ☰ button at the header's right. */
+    #menu-wrap { position: relative; }
+    #menu-panel {
+      position: absolute; top: calc(100% + 6px); right: 0;
+      display: flex; flex-direction: column; gap: 5px;
+      background: #1e1e2e; border: 1px solid #45475a; border-radius: 8px;
+      padding: 6px; min-width: 168px; z-index: 20;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
     }
-    #mode-toggle button + button { border-left: 1px solid #45475a; }
-    #mode-toggle button:hover { background: #45475a; }
-    #mode-toggle button.on { background: #585b70; color: #fff; }
+    #menu-panel.hidden { display: none; }
+    #menu-panel button { width: 100%; text-align: left; }
+
+    /* View-mode segmented toggle (Conceptual | Logical) — lives in the light sidebar. */
+    #mode-toggle { display: flex; border: 1px solid #cbd5e0; border-radius: 5px; overflow: hidden; margin-bottom: 8px; }
+    #mode-toggle button {
+      flex: 1; background: #fff; color: #4a5568; border: 0; border-radius: 0;
+      padding: 5px 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    #mode-toggle button + button { border-left: 1px solid #cbd5e0; }
+    #mode-toggle button:hover { background: #f0f0f0; }
+    #mode-toggle button.on { background: #475569; color: #fff; }
 
     /* Logical-mode table node: header band + column rows */
     .node.logical .lg-name { font-weight: 700; font-size: 11.5px; }
@@ -479,28 +492,27 @@
 
 <header id="header">
   <span class="app-title">flatbase <small>v0.5</small></span>
-  <div id="mode-toggle" title="Conceptual = entity boxes · Logical = column rows">
-    <button id="mode-conceptual" class="on" data-mode="conceptual">Conceptual</button>
-    <button id="mode-logical" data-mode="logical">Logical</button>
-  </div>
   <div id="domain-filters"></div>
-  <select id="proposed-filter" title="Filter by proposed/defined">
-    <option value="all">Show: All</option>
-    <option value="proposed">Proposed only</option>
-    <option value="defined">Defined only</option>
-  </select>
   <button id="zoom-out-btn" title="Zoom out">−</button>
   <button id="zoom-in-btn" title="Zoom in">+</button>
-  <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
-  <button id="reset-btn">Reset</button>
-  <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
-  <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
-  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+  <div id="menu-wrap">
+    <button id="menu-btn" title="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
+    <div id="menu-panel" class="hidden">
+      <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+      <button id="reset-btn">Reset</button>
+      <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
+      <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+    </div>
+  </div>
 </header>
 
 <div id="main">
   <nav id="sidebar">
     <div id="sidebar-tools">
+      <div id="mode-toggle" title="Conceptual = entity boxes · Logical = column rows">
+        <button id="mode-conceptual" class="on" data-mode="conceptual">Conceptual</button>
+        <button id="mode-logical" data-mode="logical">Logical</button>
+      </div>
       <input id="sidebar-search" type="search" placeholder="Search tables…" autocomplete="off">
       <div id="sidebar-count"></div>
     </div>
@@ -2276,9 +2288,7 @@ function resetState() {
   hiddenNodes.clear();
   cascadeHiddenNodes.clear();
   hiddenDomains.clear();
-  proposedFilter = 'all';
-  const filterEl = document.getElementById('proposed-filter');
-  if (filterEl) filterEl.value = 'all';
+  proposedFilter = 'all';        // always 'all' — the Show filter UI was removed
   sidebarSearch = '';
   const searchEl = document.getElementById('sidebar-search');
   if (searchEl) searchEl.value = '';
@@ -2683,28 +2693,27 @@ function buildFrozenHTML(data) {
   const bodyMarkup = `
 <header id="header">
   <span class="app-title">flatbase <small>v0.5</small></span>
-  <div id="mode-toggle" title="Conceptual = entity boxes · Logical = column rows">
-    <button id="mode-conceptual" class="on" data-mode="conceptual">Conceptual</button>
-    <button id="mode-logical" data-mode="logical">Logical</button>
-  </div>
   <div id="domain-filters"></div>
-  <select id="proposed-filter" title="Filter by proposed/defined">
-    <option value="all">Show: All</option>
-    <option value="proposed">Proposed only</option>
-    <option value="defined">Defined only</option>
-  </select>
   <button id="zoom-out-btn" title="Zoom out">−</button>
   <button id="zoom-in-btn" title="Zoom in">+</button>
-  <button id="fit-btn" title="Fit the whole diagram into view">Fit</button>
-  <button id="reset-btn">Reset</button>
-  <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
-  <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
-  <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+  <div id="menu-wrap">
+    <button id="menu-btn" title="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
+    <div id="menu-panel" class="hidden">
+      <button id="export-btn" title="Download a standalone HTML viewer with this schema baked in">↓ Export</button>
+      <button id="reset-btn">Reset</button>
+      <button id="reload-data-btn" title="Load a different tables.json (also clears arbitration decisions)">↻ Data</button>
+      <button id="export-proposal-btn" style="display:none" title="Download the arbitrated proposal.json (kept + overruled, ignored removed)">↓ Proposal</button>
+    </div>
+  </div>
 </header>
 
 <div id="main">
   <nav id="sidebar">
     <div id="sidebar-tools">
+      <div id="mode-toggle" title="Conceptual = entity boxes · Logical = column rows">
+        <button id="mode-conceptual" class="on" data-mode="conceptual">Conceptual</button>
+        <button id="mode-logical" data-mode="logical">Logical</button>
+      </div>
       <input id="sidebar-search" type="search" placeholder="Search tables…" autocomplete="off">
       <div id="sidebar-count"></div>
     </div>
@@ -3142,7 +3151,6 @@ async function init() {
   fitView();
 
   document.getElementById('reset-btn').addEventListener('click', resetState);
-  document.getElementById('fit-btn').addEventListener('click', fitView);
   document.getElementById('mode-conceptual').addEventListener('click', () => switchViewMode('conceptual'));
   document.getElementById('mode-logical').addEventListener('click', () => switchViewMode('logical'));
   document.getElementById('zoom-in-btn').addEventListener('click', () => zoomStep(1.25));
@@ -3151,11 +3159,8 @@ async function init() {
     sidebarSearch = e.target.value.trim().toLowerCase();
     renderSidebar();               // sidebar-only filter — the diagram is untouched
   });
-  document.getElementById('proposed-filter').addEventListener('change', (e) => {
-    proposedFilter = e.target.value;
-    render();
-  });
   document.getElementById('export-btn').addEventListener('click', exportFrozenHTML);
+  initMenu();
   document.getElementById('export-proposal-btn').addEventListener('click', exportProposal);
   const reloadBtn = document.getElementById('reload-data-btn');
   if (window.__BAKED_DATA__) {
@@ -3166,10 +3171,35 @@ async function init() {
   document.getElementById('detail-close').addEventListener('click', closeDetailPanel);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    // Hamburger takes Escape priority: an open menu closes first and swallows the
+    // key, so focus/panel state is untouched. Only a closed menu falls through.
+    if (menuOpen) { setMenuOpen(false); return; }
     // Escape clears focus; if a panel is open it closes it too (closeDetailPanel
     // also clears focus). Both-at-once is intended.
     if (openPanelId) closeDetailPanel();
     else clearFocus();
+  });
+}
+
+// ---- hamburger menu (☰) ----
+// A simple click-to-toggle dropdown holding Export / Reset / ↻ Data / ↓ Proposal.
+// Click-outside and Escape close it; Escape priority is handled in init()'s keydown.
+let menuOpen = false;
+function setMenuOpen(open) {
+  menuOpen = open;
+  document.getElementById('menu-panel').classList.toggle('hidden', !open);
+  document.getElementById('menu-btn').setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function initMenu() {
+  const btn = document.getElementById('menu-btn');
+  const panel = document.getElementById('menu-panel');
+  btn.addEventListener('click', (e) => { e.stopPropagation(); setMenuOpen(!menuOpen); });
+  // Any action inside the panel closes the menu (after its own handler runs).
+  panel.addEventListener('click', () => setMenuOpen(false));
+  // Click anywhere outside the menu closes it — without swallowing the click, so a
+  // background click still reaches the SVG's clearFocus handler.
+  document.addEventListener('click', (e) => {
+    if (menuOpen && !document.getElementById('menu-wrap').contains(e.target)) setMenuOpen(false);
   });
 }
 

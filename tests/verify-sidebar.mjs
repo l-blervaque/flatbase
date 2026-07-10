@@ -52,7 +52,7 @@ const noneShown = await page.evaluate(() => ({
 }));
 ok('no-match search: empty list + 0 count', noneShown.rows === 0 && noneShown.global === '0 / ' + nTables + ' tables', JSON.stringify(noneShown));
 // clear via Reset
-await page.click('#reset-btn');
+await page.click('#menu-btn'); await page.click('#reset-btn');
 const afterReset = await page.evaluate(() => ({
   val: document.getElementById('sidebar-search').value,
   rows: document.querySelectorAll('#sidebar-list .sidebar-table').length,
@@ -95,6 +95,7 @@ ok('color survives reload', reloaded === '#ff0080', reloaded);
 await page.screenshot({ path: path.join(OUT, 'recolored.png') });
 
 // 4. Frozen export carries the color + the new sidebar UI
+await page.click('#menu-btn');                 // ↓ Export now lives in the hamburger menu
 const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#export-btn')]);
 const frozenPath = path.join(OUT, 'frozen-sidebar.html');
 await dl.saveAs(frozenPath);

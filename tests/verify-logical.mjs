@@ -24,14 +24,24 @@ await page.evaluate(f => { localStorage.clear(); localStorage.setItem('flatbase.
 await page.reload();
 await page.waitForSelector('.node', { timeout: 5000 });
 
-// 1. Toggle exists, defaults conceptual
-const toggle0 = await page.evaluate(() => ({
-  exists: !!document.getElementById('mode-toggle'),
-  concOn: document.getElementById('mode-conceptual').classList.contains('on'),
-  logOn: document.getElementById('mode-logical').classList.contains('on'),
-  anyLogical: !!document.querySelector('.node.logical'),
-}));
+// 1. Toggle exists, defaults conceptual, and lives in the sidebar ABOVE the search input.
+const toggle0 = await page.evaluate(() => {
+  const tog = document.getElementById('mode-toggle');
+  const tools = document.getElementById('sidebar-tools');
+  const search = document.getElementById('sidebar-search');
+  // DOCUMENT_POSITION_FOLLOWING (4) means `search` comes after `tog` in document order.
+  const aboveSearch = !!(tog.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING);
+  return {
+    exists: !!tog,
+    inSidebarTools: !!tools && tools.contains(tog),
+    aboveSearch,
+    concOn: document.getElementById('mode-conceptual').classList.contains('on'),
+    logOn: document.getElementById('mode-logical').classList.contains('on'),
+    anyLogical: !!document.querySelector('.node.logical'),
+  };
+});
 ok('toggle present, defaults to conceptual', toggle0.exists && toggle0.concOn && !toggle0.logOn && !toggle0.anyLogical, JSON.stringify(toggle0));
+ok('toggle sits inside #sidebar-tools above #sidebar-search', toggle0.inSidebarTools && toggle0.aboveSearch, JSON.stringify(toggle0));
 
 // 2. Switch to logical → nodes gain .logical, toggle state flips, mode persisted
 await page.click('#mode-logical');
@@ -142,7 +152,7 @@ const overflowCheck = await page.evaluate(() => {
 ok('no logical label overflows the box', overflowCheck.length === 0, JSON.stringify(overflowCheck.slice(0, 5)));
 
 // 9b. viewMode is a viewing preference: NOT cleared by Reset (still logical after).
-await page.click('#reset-btn');
+await page.click('#menu-btn'); await page.click('#reset-btn');
 const afterReset = await page.evaluate(() => ({
   mode: localStorage.getItem('flatbase.viewmode'),
   stillLogical: !!document.querySelector('.node.logical'),
@@ -164,6 +174,7 @@ ok('hub pinned at origin in logical mode', hub.p && Math.abs(hub.p.x) < 1e-6 && 
 await page.screenshot({ path: path.join(OUT, 'logical.png') });
 
 // 10. Frozen export carries a working toggle (logical mode baked in)
+await page.click('#menu-btn');                 // ↓ Export now lives in the hamburger menu
 const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#export-btn')]);
 const frozenPath = path.join(OUT, 'frozen-logical.html');
 await dl.saveAs(frozenPath);
