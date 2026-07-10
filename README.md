@@ -17,8 +17,9 @@ Most schema viewers want a server, a build step, an account, or all three. flatb
 - **No dependencies.** Vanilla JS + SVG. No npm, no bundler, no CDN.
 - **No server.** Runs on `file://` via a drag-drop loader; cached in `localStorage` after first use.
 - **Two input shapes.** A single bundled `tables.json`, or a multi-file folder (`index.json` + per-domain files + optional `enums.json`). Both normalize to the same internal shape.
-- **Force-directed layout.** Nodes self-organize once on load.
-- **Domain filters, cascade-hide, FK navigation.** Click an FK badge to jump to the referenced table. Hide a node and any node it orphans hides too.
+- **Force-directed layout, pan/zoom, drag.** Nodes self-organize deterministically on load; drag to fine-tune (positions persist), wheel to pan, ctrl/⌘+wheel to zoom, Fit to frame.
+- **Focus mode & crow's-foot cardinality.** Click a table or an edge to dim everything outside its neighborhood; relation ends render fork ("many") / tick ("one") marks.
+- **Domain filters, sidebar search, FK navigation.** Click an FK badge to jump to the referenced table; hide a table and anything it orphans hides too.
 - **Frozen HTML export.** One click → standalone `.html` with the schema inlined as JSON. Locked to that schema, openable anywhere.
 
 ## Usage
